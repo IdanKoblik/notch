@@ -1,4 +1,7 @@
 use clap::{Parser, Subcommand};
+use crate::cmd::Cmd;
+
+mod cmd;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -9,14 +12,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Test {
-        #[arg(short, long)]
-        debug: bool,
-    }
+    Inject(cmd::inject::InjectCmd)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Inject(cmd) => cmd.run()?,
+    }
 
     Ok(())
 }
