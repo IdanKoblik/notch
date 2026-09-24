@@ -1,4 +1,4 @@
-{
+[
   { "name": "type/feature",      "color": "1D76DB", "description": "New features or enhancements" },
   { "name": "type/bug",          "color": "D73A4A", "description": "Bug reports and fixes" },
   { "name": "type/documentation","color": "0E8A16", "description": "Documentation improvements" },
@@ -18,4 +18,4 @@
   { "name": "area/build",        "color": "4F46E5", "description": "Build system changes" },
   { "name": "area/dependencies", "color": "4338CA", "description": "Dependency updates" },
   { "name": "area/ci",           "color": "7C3AED", "description": "CI/CD improvements" }
-}
+]
