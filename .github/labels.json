@@ -1,7 +1,7 @@
 [
   { "name": "type/feature",      "color": "1D76DB", "description": "New features or enhancements" },
   { "name": "type/bug",          "color": "D73A4A", "description": "Bug reports and fixes" },
-  { "name": "type/documentation","color": "0E8A16", "description": "Documentation improvements" },
+  { "name": "type/documentation","color": "8A0E82", "description": "Documentation improvements" },
   { "name": "type/enhancement",  "color": "5319E7", "description": "General improvements" },
   { "name": "type/refactor",     "color": "6F42C1", "description": "Code refactoring" },
   { "name": "type/performance",  "color": "0052CC", "description": "Performance improvements" },
