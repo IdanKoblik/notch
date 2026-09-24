@@ -6,6 +6,7 @@
   { "name": "type/refactor",     "color": "6F42C1", "description": "Code refactoring" },
   { "name": "type/performance",  "color": "0052CC", "description": "Performance improvements" },
   { "name": "type/chore",        "color": "8B949E", "description": "Routine maintenance tasks" },
+  { "name": "type/research",     "color": "F9D0C4", "description": "Investigation or prototype work" },
 
   { "name": "status/needs-review","color": "9333EA", "description": "Needs review" },
 
@@ -17,5 +18,6 @@
 
   { "name": "area/build",        "color": "4F46E5", "description": "Build system changes" },
   { "name": "area/dependencies", "color": "4338CA", "description": "Dependency updates" },
-  { "name": "area/ci",           "color": "7C3AED", "description": "CI/CD improvements" }
+  { "name": "area/ci",           "color": "7C3AED", "description": "CI/CD improvements" },
+  { "name": "area/cli",          "color": "CFD3D7", "description": "Command line interface" }
 ]
