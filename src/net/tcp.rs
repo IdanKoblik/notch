@@ -4,7 +4,7 @@ use std::vec::Vec;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum TcpError {
+pub enum Error {
    #[error("failed to create TCP packet")]
    PacketCreation,
 }
@@ -15,9 +15,9 @@ pub fn construct_tcp_syn(
     source_port: u16,
     dest_port: u16,
     isn: u32
-) -> Result<Vec<u8>, TcpError> {
+) -> Result<Vec<u8>, Error> {
     let mut tcp_buffer = vec![0u8; 20];
-    let mut tcp_packet = MutableTcpPacket::new(&mut tcp_buffer).ok_or(TcpError::PacketCreation)?;
+    let mut tcp_packet = MutableTcpPacket::new(&mut tcp_buffer).ok_or(Error::PacketCreation)?;
 
     tcp_packet.set_source(source_port);
     tcp_packet.set_destination(dest_port);

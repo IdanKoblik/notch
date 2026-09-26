@@ -11,12 +11,12 @@ use pnet::transport::{transport_channel, TransportChannelType, TransportProtocol
 use sha2::{Digest, Sha256};
 use hmac::{Hmac, KeyInit, Mac};
 use crate::crypto::num::encrypt_u32;
-use crate::net::tcp::{TcpError, construct_tcp_syn};
+use crate::net::tcp::{self, construct_tcp_syn};
 use crate::steg::isn::{Flags, IsnPacket, Command};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum InjectCmdError {
+pub enum Error {
     #[error("missing auth secret")]
     MissingSecret,
 
@@ -33,7 +33,7 @@ pub enum InjectCmdError {
     InvalidTCP,
 
     #[error("failed to construct TCP packet: {0}")]
-    Tcp(#[from] TcpError),
+    Tcp(#[from] tcp::Error),
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -68,7 +68,7 @@ pub struct InjectCmd {
 type HmacSha256 = Hmac<Sha256>;
 
 impl InjectCmd {
-    pub fn run(&self) -> Result<(), InjectCmdError> {
+    pub fn run(&self) -> Result<(), Error> {
         let now = (SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time went backwards :O")
@@ -80,18 +80,18 @@ impl InjectCmd {
                 ipnetwork::IpNetwork::V4(ipv4) => Some(ipv4.ip()),
                 _ => None,
             }
-        }).ok_or(InjectCmdError::MissingSourceIp)?;
+        }).ok_or(Error::MissingSourceIp)?;
 
-        let raw_secret = env::var("SECRET").map_err(|_| InjectCmdError::MissingSecret)?;
+        let raw_secret = env::var("SECRET").map_err(|_| Error::MissingSecret)?;
         let secret: [u8; 32] = Sha256::digest(raw_secret.as_bytes()).into();
 
-        let mut mac = HmacSha256::new_from_slice(&secret).map_err(|_| InjectCmdError::InvalidSecretLength)?;
+        let mut mac = HmacSha256::new_from_slice(&secret).map_err(|_| Error::InvalidSecretLength)?;
 
         let protocol = TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
         let (mut tx, _rx) = transport_channel(4096, protocol)
             .map_err(|e| match e.kind() {
-                ErrorKind::PermissionDenied => InjectCmdError::PermissionDenied,
-                _ => InjectCmdError::Io(e),
+                ErrorKind::PermissionDenied => Error::PermissionDenied,
+                _ => Error::Io(e),
             })?;
 
         for index in 1..=3 {
@@ -123,8 +123,8 @@ fn send_syn(
     tx: &mut TransportSender,
     packet_bytes: &[u8],
     dest_ip: Ipv4Addr,
-) -> Result<(), InjectCmdError> {
-    let packet = TcpPacket::new(packet_bytes).ok_or(InjectCmdError::InvalidTCP)?;
+) -> Result<(), Error> {
+    let packet = TcpPacket::new(packet_bytes).ok_or(Error::InvalidTCP)?;
     tx.send_to(packet, IpAddr::V4(dest_ip))?;
 
     Ok(())
