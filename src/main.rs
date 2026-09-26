@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
-use crate::cmd::Cmd;
 
 mod cmd;
 mod net;
 mod steg;
+mod crypto;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
