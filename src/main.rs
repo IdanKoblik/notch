@@ -2,12 +2,14 @@ use clap::{Parser, Subcommand};
 use crate::cmd::Cmd;
 
 mod cmd;
+mod net;
+mod steg;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
    #[command(subcommand)]
-   command: Commands,
+    command: Commands,
 }
 
 #[derive(Subcommand)]
