@@ -67,3 +67,53 @@ impl IsnPacket {
             | (self.cmd as u32)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listen(timestamp: u8, window: u8) -> Command {
+        Command::Listen { timestamp, window }
+    }
+
+    #[test]
+    fn command_encode_edge_cases() {
+        assert_eq!(listen(0, 0).encode(), 0x1000); // min
+        assert_eq!(listen(0xAB, 0xC).encode(), 0x1ABC); // typical
+        assert_eq!(listen(0xFF, 0xF).encode(), 0x1FFF); // max
+        assert_eq!(listen(0, 0x1F).encode(), 0x100F); // window masked to 4 bits
+    }
+
+    #[test]
+    fn command_decode_edge_cases() {
+        assert_eq!(Command::decode(0x1000), Some(listen(0, 0)));
+        assert_eq!(Command::decode(0x1ABC), Some(listen(0xAB, 0xC)));
+        assert_eq!(Command::decode(0x1FFF), Some(listen(0xFF, 0xF)));
+    }
+
+    #[test]
+    fn command_decode_unknown_tag_returns_none() {
+        assert_eq!(Command::decode(0x0000), None);
+        assert_eq!(Command::decode(0x2000), None);
+        assert_eq!(Command::decode(0xFFFF), None);
+    }
+
+    #[test]
+    fn command_roundtrip() {
+        for timestamp in 0..=u8::MAX {
+            for window in 0..=0x0F {
+                let cmd = listen(timestamp, window);
+                assert_eq!(Command::decode(cmd.encode()), Some(cmd));
+            }
+        }
+    }
+
+    #[test]
+    fn packet_encode_edge_cases() {
+        let cmd = listen(0xAB, 0xC);
+        assert_eq!(IsnPacket::new(0xAA, Flags::Start as u8, 0x3, cmd).encode(), 0xAA13_1ABC);
+        assert_eq!(IsnPacket::new(0, Flags::None as u8, 0, listen(0, 0)).encode(), 0x0000_1000);
+        assert_eq!(IsnPacket::new(0xFF, 0xF, 0xF, listen(0xFF, 0xF)).encode(), 0xFFFF_1FFF);
+        assert_eq!(IsnPacket::new(0, 0xFF, 0xFF, listen(0, 0)).encode(), 0x00FF_1000);
+    }
+}

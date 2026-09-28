@@ -3,7 +3,7 @@ use std::io::{ErrorKind};
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{SystemTime, UNIX_EPOCH};
 use clap::Args;
-use pnet::datalink::{self, NetworkInterface};
+use pnet::datalink::{NetworkInterface};
 use pnet::ipnetwork;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::tcp::TcpPacket;
@@ -11,6 +11,7 @@ use pnet::transport::{transport_channel, TransportChannelType, TransportProtocol
 use sha2::{Digest, Sha256};
 use hmac::{Hmac, KeyInit, Mac};
 use crate::crypto::num::encrypt_u32;
+use crate::net::ip::{find_ipv4, parse_interface};
 use crate::net::tcp::{self, construct_tcp_syn};
 use crate::steg::isn::{Flags, IsnPacket, Command};
 use thiserror::Error;
@@ -37,13 +38,6 @@ pub enum Error {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-}
-
-fn parse_interface(s: &str) -> Result<datalink::NetworkInterface, String> {
-    pnet::datalink::interfaces()
-        .into_iter()
-        .find(|iface| iface.name == s)
-        .ok_or_else(|| format!("network interface not found: {s}"))
 }
 
 #[derive(Args)]
@@ -75,12 +69,7 @@ impl InjectCmd {
             .as_secs()
         ) as u8;
 
-        let source = self.interface.ips.iter().find_map(|ip| {
-            match ip {
-                ipnetwork::IpNetwork::V4(ipv4) => Some(ipv4.ip()),
-                _ => None,
-            }
-        }).ok_or(Error::MissingSourceIp)?;
+        let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
 
         let raw_secret = env::var("SECRET").map_err(|_| Error::MissingSecret)?;
         let secret: [u8; 32] = Sha256::digest(raw_secret.as_bytes()).into();
