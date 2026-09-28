@@ -1,22 +1,28 @@
 use clap::{Parser, Subcommand};
 
+mod cmd;
+mod net;
+mod steg;
+mod crypto;
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
    #[command(subcommand)]
-   command: Commands,
+    command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    Test {
-        #[arg(short, long)]
-        debug: bool,
-    }
+    Inject(cmd::inject::InjectCmd)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Inject(cmd) => cmd.run()?,
+    }
 
     Ok(())
 }
