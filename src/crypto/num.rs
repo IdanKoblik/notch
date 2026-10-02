@@ -1,4 +1,4 @@
-use hmac::{Hmac, Mac, KeyInit};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -16,6 +16,7 @@ pub fn encrypt_u32(value: u32, key: &[u8; 32]) -> u32 {
     ((left as u32) << 16) | right as u32
 }
 
+#[allow(unused)]
 pub fn decrypt_u32(value: u32, key: &[u8; 32]) -> u32 {
     let mut left = (value >> 16) as u16;
     let mut right = value as u16;
@@ -30,8 +31,7 @@ pub fn decrypt_u32(value: u32, key: &[u8; 32]) -> u32 {
 }
 
 fn round_function(value: u16, round: u8, key: &[u8; 32]) -> u16 {
-    let mut mac = HmacSha256::new_from_slice(key)
-        .expect("32-byte HMAC key is valid");
+    let mut mac = HmacSha256::new_from_slice(key).expect("32-byte HMAC key is valid");
 
     mac.update(&[round]);
     mac.update(&value.to_be_bytes());
@@ -43,8 +43,8 @@ fn round_function(value: u16, round: u8, key: &[u8; 32]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use rand::RngExt;
     use super::*;
+    use rand::RngExt;
 
     #[test]
     fn test_transcript() {

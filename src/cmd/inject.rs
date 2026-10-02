@@ -1,18 +1,18 @@
-use std::env;
+use std::fs::File;
+use std::io::prelude::Read;
+use std::{env, io};
 use std::io::{ErrorKind};
-use std::net::{IpAddr, Ipv4Addr};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::net::{Ipv4Addr};
+use std::time::{Duration, Instant};
 use clap::Args;
 use pnet::datalink::{NetworkInterface};
-use pnet::ipnetwork;
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::tcp::TcpPacket;
-use pnet::transport::{transport_channel, TransportChannelType, TransportProtocol, TransportSender};
+use pnet::transport::{transport_channel, TransportChannelType, TransportProtocol};
 use sha2::{Digest, Sha256};
 use hmac::{Hmac, KeyInit, Mac};
 use crate::crypto::num::encrypt_u32;
 use crate::net::ip::{find_ipv4, parse_interface};
-use crate::net::tcp::{self, construct_tcp_syn};
+use crate::net::tcp::{self, construct_tcp_syn, send_syn};
 use crate::steg::isn::{Flags, IsnPacket, Command};
 use thiserror::Error;
 
@@ -30,8 +30,11 @@ pub enum Error {
     #[error("invalid HMAC secret length")]
     InvalidSecretLength,
 
-    #[error("malformed TCP packet")]
-    InvalidTCP,
+    #[error("payload ended with an incomplete command; expected {0} bytes per command")]
+    IncompletePayload(usize),
+
+    #[error("packet rate must be a finite, nonnegative value")]
+    InvalidPacketRate,
 
     #[error("failed to construct TCP packet: {0}")]
     Tcp(#[from] tcp::Error),
@@ -48,34 +51,35 @@ pub struct InjectCmd {
     #[arg(long = "port", default_value_t = 6769)]
     dest_port: u16,
 
-    #[arg(long, default_value_t = 6769)]
+    #[arg(long = "source-port", default_value_t = 6769)]
     source_port: u16,
 
     #[arg(short, long, value_parser = parse_interface)]
     interface: NetworkInterface,
 
-    // TODO
-    //#[arg(short, long)]
-    //payload: String,
+    #[arg(long="no-auth", default_value_t = false)]
+    no_auth: bool,
+
+    #[arg(long, default_value = "")]
+    payload: String,
+
+    /// Maximum packets per second, 0 sends without pacing.
+    #[arg(long, default_value_t = 0.0)]
+    rate: f64,
+
+    #[arg(long, default_value_t = false)]
+    verbose: bool,
 }
 
 type HmacSha256 = Hmac<Sha256>;
 
 impl InjectCmd {
     pub fn run(&self) -> Result<(), Error> {
-        let now = (SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time went backwards :O")
-            .as_secs()
-        ) as u8;
+        if !self.rate.is_finite() || self.rate < 0.0 {
+            return Err(Error::InvalidPacketRate);
+        }
 
         let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
-
-        let raw_secret = env::var("SECRET").map_err(|_| Error::MissingSecret)?;
-        let secret: [u8; 32] = Sha256::digest(raw_secret.as_bytes()).into();
-
-        let mut mac = HmacSha256::new_from_slice(&secret).map_err(|_| Error::InvalidSecretLength)?;
-
         let protocol = TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
         let (mut tx, _rx) = transport_channel(4096, protocol)
             .map_err(|e| match e.kind() {
@@ -83,38 +87,129 @@ impl InjectCmd {
                 _ => Error::Io(e),
             })?;
 
-        for index in 1..=3 {
-            mac.update(&[index]);
-            let auth_tag = mac.clone().finalize().into_bytes()[index as usize];
+        let mut src: Box<dyn Read> = if self.payload.is_empty() {
+            Box::new(io::stdin().lock())
+        } else {
+            Box::new(File::open(&self.payload)?)
+        };
 
-            let flags = match index {
-                1 => Flags::Start,
-                3 => Flags::End,
-                _ => Flags::None,
-            };
-
-            let cmd = Command::Listen { timestamp: now, window: 12 }; // TODO Not hardcoded
-            let packet = IsnPacket::new(auth_tag, flags as u8, index, cmd);
-            let raw_isn = packet.encode();
-            let isn = encrypt_u32(raw_isn, &secret);
-
-            let tcp = construct_tcp_syn(source, self.dest, self.source_port, self.dest_port, isn)?;
-            eprintln!("isn: 0x{isn:08x}");
-            eprintln!("tcp: {}", tcp.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "));
-            send_syn(&mut tx, &tcp, self.dest)?;
+        let mut mac = None;
+        let mut secret: Option<[u8; 32]> = None;
+        if !self.no_auth {
+            let raw_secret = env::var("SECRET").map_err(|_| Error::MissingSecret)?;
+            let secret_bytes: [u8; 32] = Sha256::digest(raw_secret.as_bytes()).into();
+            mac = Some(HmacSha256::new_from_slice(&secret_bytes).map_err(|_| Error::InvalidSecretLength)?);
+            secret = Some(secret_bytes);
         }
 
+        let chunk_size = if self.no_auth { 4 } else { 2 };
+        let mut index: u8 = 0;
+        let mut first = true;
+        let mut packets_sent: u64 = 0;
+        let packet_period = if self.rate > 0.0 {
+            Some(
+                Duration::try_from_secs_f64(1.0 / self.rate)
+                    .map_err(|_| Error::InvalidPacketRate)?,
+            )
+        } else {
+            None
+        };
+        let mut next_packet = Instant::now();
+
+        loop {
+            let mut current = vec![0u8; chunk_size];
+            let n = read_command(&mut src, &mut current)?;
+
+            if n == 0 {
+                break;
+            }
+
+            if n != chunk_size {
+                return Err(Error::IncompletePayload(chunk_size));
+            }
+
+            let is_last = n < chunk_size;
+
+            let flags = if first {
+                Flags::Start
+            } else if is_last {
+                Flags::End
+            } else {
+                Flags::None
+            };
+
+            let isn = if self.no_auth {
+                u32::from_be_bytes(current[..4].try_into().unwrap())
+            } else {
+                let raw = u16::from_be_bytes(current[..2].try_into().unwrap());
+
+                let mut m = mac.as_ref().unwrap().clone();
+                m.update(&[index]);
+
+                let auth_tag = m.finalize().into_bytes()[index as usize];
+
+                let cmd = Command::Ping { value: raw };
+                let packet = IsnPacket::new(auth_tag, flags as u8, index, cmd);
+
+                index = index.wrapping_add(1);
+
+                let raw_isn = packet.encode();
+                encrypt_u32(raw_isn, &secret.unwrap())
+            };
+
+            let tcp = construct_tcp_syn(
+                source,
+                self.dest,
+                self.source_port,
+                self.dest_port,
+                isn,
+            )?;
+
+            if self.verbose {
+                eprintln!("isn: 0x{isn:08x}");
+                eprintln!(
+                    "tcp: {}",
+                    tcp.iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+            }
+
+            send_syn(&mut tx, &tcp, self.dest)?;
+            packets_sent += 1;
+
+            if let Some(period) = packet_period {
+                next_packet += period;
+                let now = Instant::now();
+                if now < next_packet {
+                    std::thread::sleep(next_packet - now);
+                } else {
+                    // Do not build up a backlog if sending falls behind.
+                    next_packet = now;
+                }
+            }
+
+            first = false;
+            if is_last {
+                break;
+            }
+        }
+
+        eprintln!("sent {packets_sent} packets");
         Ok(())
     }
 }
 
-fn send_syn(
-    tx: &mut TransportSender,
-    packet_bytes: &[u8],
-    dest_ip: Ipv4Addr,
-) -> Result<(), Error> {
-    let packet = TcpPacket::new(packet_bytes).ok_or(Error::InvalidTCP)?;
-    tx.send_to(packet, IpAddr::V4(dest_ip))?;
-
-    Ok(())
+fn read_command(src: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match src.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(filled)
 }

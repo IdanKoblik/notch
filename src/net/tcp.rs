@@ -1,5 +1,6 @@
-use pnet::packet::tcp::{ipv4_checksum, MutableTcpPacket, TcpFlags};
-use std::net::Ipv4Addr;
+use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket, ipv4_checksum};
+use pnet::transport::TransportSender;
+use std::net::{IpAddr, Ipv4Addr};
 use std::vec::Vec;
 use thiserror::Error;
 
@@ -7,6 +8,9 @@ use thiserror::Error;
 pub enum Error {
    #[error("failed to create TCP packet")]
    PacketCreation,
+
+   #[error("I/O error: {0}")]
+   Io(#[from] std::io::Error),
 }
 
 pub fn construct_tcp_syn(
@@ -33,4 +37,15 @@ pub fn construct_tcp_syn(
     tcp_packet.set_checksum(checksum);
 
     Ok(tcp_buffer)
+}
+
+pub fn send_syn(
+    tx: &mut TransportSender,
+    packet_bytes: &[u8],
+    dest_ip: Ipv4Addr,
+) -> Result<(), Error> {
+    let packet = TcpPacket::new(packet_bytes).ok_or(Error::PacketCreation)?;
+    tx.send_to(packet, IpAddr::V4(dest_ip))?;
+
+    Ok(())
 }
