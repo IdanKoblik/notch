@@ -116,9 +116,6 @@ mod tests {
             IsnPacket::new(0xFF, 0xF, 0xF, ping(0xFFF)).encode(),
             0xFFFF_1FFF
         );
-        assert_eq!(
-            IsnPacket::new(0, 0xFF, 0xFF, ping(0)).encode(),
-            0x00FF_1000
-        );
+        assert_eq!(IsnPacket::new(0, 0xFF, 0xFF, ping(0)).encode(), 0x00FF_1000);
     }
 }
