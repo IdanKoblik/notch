@@ -1,0 +1,227 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version / tag (e.g. v1.2.3)"
+        required: true
+        type: string
+      skip_changelog:
+        description: "Release without checking CHANGELOG.md"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: notch
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # PR gate: require a CHANGELOG.md entry unless the ci/skip-changelog label set.
+  # ---------------------------------------------------------------------------
+  changelog:
+    name: Changelog check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require CHANGELOG.md update
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'ci/skip-changelog') }}
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.event.pull_request.head.sha }}'
+          if git diff --name-only "$base" "$head" | grep -qx 'CHANGELOG.md'; then
+            echo "CHANGELOG.md was updated in this PR."
+          else
+            echo "::error::CHANGELOG.md was not updated. Add an entry, or apply the 'ci/skip-changelog' label to bypass."
+            exit 1
+          fi
+
+      - name: Skipped via label
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'ci/skip-changelog') }}
+        run: echo "Skipping changelog check — 'ci/skip-changelog' label is present."
+
+  # ---------------------------------------------------------------------------
+  # Unit tests
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test
+        run: cargo test --all-targets --locked
+
+  # ---------------------------------------------------------------------------
+  # Lint: formatting + clippy
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # Build release binaries for x86_64 and aarch64 (ARM64) Linux.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            cross: false
+          - arch: aarch64
+            target: aarch64-unknown-linux-gnu
+            cross: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }}
+          else
+            cargo build --release --locked --target ${{ matrix.target }}
+          fi
+
+      - name: Package binary
+        run: |
+          out="${BIN_NAME}-${{ matrix.arch }}-linux"
+          cp "target/${{ matrix.target }}/release/${BIN_NAME}" "$out"
+          echo "ASSET=$out" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-${{ matrix.arch }}-linux
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Release: only on manual workflow_dispatch. Gates on CHANGELOG.md, builds
+  # release notes from it, and publishes the binaries to a GitHub release.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Release
+    if: github.event_name == 'workflow_dispatch'
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check CHANGELOG.md changed since last release
+        if: ${{ !inputs.skip_changelog }}
+        run: |
+          last_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -z "$last_tag" ]; then
+            echo "No previous tag found — nothing to diff against, proceeding."
+            exit 0
+          fi
+          if git diff --name-only "$last_tag" HEAD -- CHANGELOG.md | grep -qx 'CHANGELOG.md'; then
+            echo "CHANGELOG.md changed since $last_tag."
+          else
+            echo "::error::CHANGELOG.md unchanged since $last_tag. Update it, or enable the 'skip_changelog' option."
+            exit 1
+          fi
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          version='${{ inputs.version }}'
+          ver="${version#v}"           # strip a leading 'v' if present
+          notes_file="$(mktemp)"
+
+          # Pull the section for this version; fall back to [Unreleased].
+          awk -v ver="$ver" '
+            BEGIN { want = "^## \\[(v)?" ver "\\]"; found = 0 }
+            /^## \[/ {
+              if (found) exit
+              if ($0 ~ want) { found = 1; next }
+            }
+            found { print }
+          ' CHANGELOG.md > "$notes_file"
+
+          if [ ! -s "$notes_file" ]; then
+            echo "No section for '$ver' — falling back to [Unreleased]."
+            awk '
+              /^## \[/ { if (found) exit; if ($0 ~ /^## \[Unreleased\]/) { found = 1; next } }
+              found { print }
+            ' CHANGELOG.md > "$notes_file"
+          fi
+
+          # Trim leading/trailing blank lines.
+          sed -i -e '/./,$!d' "$notes_file"
+          if [ ! -s "$notes_file" ]; then
+            echo "Release ${version}" > "$notes_file"
+          fi
+
+          echo "file=$notes_file" >> "$GITHUB_OUTPUT"
+          echo "----- release notes -----"
+          cat "$notes_file"
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          body_path: ${{ steps.notes.outputs.file }}
+          files: dist/*
+          fail_on_unmatched_files: true
