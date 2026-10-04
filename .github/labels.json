@@ -9,6 +9,7 @@
   { "name": "type/research",     "color": "F9D0C4", "description": "Investigation or prototype work" },
 
   { "name": "status/needs-review","color": "9333EA", "description": "Needs review" },
+  { "name": "ci/skip-changelog", "color": "B1361A", "description": "Skip changelog check in a pull request" },
 
   { "name": "community/help-wanted",      "color": "2563EB", "description": "Help wanted from community" },
   { "name": "community/good-first-issue", "color": "8B5CF6", "description": "Good for first-time contributors" },
