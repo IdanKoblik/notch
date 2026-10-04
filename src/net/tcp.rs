@@ -6,11 +6,11 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-   #[error("failed to create TCP packet")]
-   PacketCreation,
+    #[error("failed to create TCP packet")]
+    PacketCreation,
 
-   #[error("I/O error: {0}")]
-   Io(#[from] std::io::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub fn construct_tcp_syn(
@@ -18,7 +18,7 @@ pub fn construct_tcp_syn(
     dest_ip: Ipv4Addr,
     source_port: u16,
     dest_port: u16,
-    isn: u32
+    isn: u32,
 ) -> Result<Vec<u8>, Error> {
     let mut tcp_buffer = vec![0u8; 20];
     let mut tcp_packet = MutableTcpPacket::new(&mut tcp_buffer).ok_or(Error::PacketCreation)?;

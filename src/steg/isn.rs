@@ -13,7 +13,7 @@ impl Command {
     pub fn encode(&self) -> u16 {
         let tag = self.tag() << 12;
         let value = match self {
-            Command::Ping { value } => *value & 0x0FFF
+            Command::Ping { value } => *value & 0x0FFF,
         };
         tag | value
     }
@@ -35,7 +35,7 @@ impl Command {
 pub enum Flags {
     None = 0x0,
     Start = 0x1,
-    End = 0x2
+    End = 0x2,
 }
 
 pub struct IsnPacket {
@@ -67,23 +67,23 @@ impl IsnPacket {
 mod tests {
     use super::*;
 
-    fn listen(timestamp: u8, window: u8) -> Command {
-        Command::Listen { timestamp, window }
+    fn ping(value: u16) -> Command {
+        Command::Ping { value }
     }
 
     #[test]
     fn command_encode_edge_cases() {
-        assert_eq!(listen(0, 0).encode(), 0x1000); // min
-        assert_eq!(listen(0xAB, 0xC).encode(), 0x1ABC); // typical
-        assert_eq!(listen(0xFF, 0xF).encode(), 0x1FFF); // max
-        assert_eq!(listen(0, 0x1F).encode(), 0x100F); // window masked to 4 bits
+        assert_eq!(ping(0).encode(), 0x1000); // min
+        assert_eq!(ping(0xABC).encode(), 0x1ABC); // typical
+        assert_eq!(ping(0xFFF).encode(), 0x1FFF); // max
+        assert_eq!(ping(0x1FFF).encode(), 0x1FFF); // value masked to 12 bits
     }
 
     #[test]
     fn command_decode_edge_cases() {
-        assert_eq!(Command::decode(0x1000), Some(listen(0, 0)));
-        assert_eq!(Command::decode(0x1ABC), Some(listen(0xAB, 0xC)));
-        assert_eq!(Command::decode(0x1FFF), Some(listen(0xFF, 0xF)));
+        assert_eq!(Command::decode(0x1000), Some(ping(0)));
+        assert_eq!(Command::decode(0x1ABC), Some(ping(0xABC)));
+        assert_eq!(Command::decode(0x1FFF), Some(ping(0xFFF)));
     }
 
     #[test]
@@ -95,20 +95,30 @@ mod tests {
 
     #[test]
     fn command_roundtrip() {
-        for timestamp in 0..=u8::MAX {
-            for window in 0..=0x0F {
-                let cmd = listen(timestamp, window);
-                assert_eq!(Command::decode(cmd.encode()), Some(cmd));
-            }
+        for value in 0..=0x0FFF {
+            let cmd = ping(value);
+            assert_eq!(Command::decode(cmd.encode()), Some(cmd));
         }
     }
 
     #[test]
     fn packet_encode_edge_cases() {
-        let cmd = listen(0xAB, 0xC);
-        assert_eq!(IsnPacket::new(0xAA, Flags::Start as u8, 0x3, cmd).encode(), 0xAA13_1ABC);
-        assert_eq!(IsnPacket::new(0, Flags::None as u8, 0, listen(0, 0)).encode(), 0x0000_1000);
-        assert_eq!(IsnPacket::new(0xFF, 0xF, 0xF, listen(0xFF, 0xF)).encode(), 0xFFFF_1FFF);
-        assert_eq!(IsnPacket::new(0, 0xFF, 0xFF, listen(0, 0)).encode(), 0x00FF_1000);
+        let cmd = ping(0xABC);
+        assert_eq!(
+            IsnPacket::new(0xAA, Flags::Start as u8, 0x3, cmd).encode(),
+            0xAA13_1ABC
+        );
+        assert_eq!(
+            IsnPacket::new(0, Flags::None as u8, 0, ping(0)).encode(),
+            0x0000_1000
+        );
+        assert_eq!(
+            IsnPacket::new(0xFF, 0xF, 0xF, ping(0xFFF)).encode(),
+            0xFFFF_1FFF
+        );
+        assert_eq!(
+            IsnPacket::new(0, 0xFF, 0xFF, ping(0)).encode(),
+            0x00FF_1000
+        );
     }
 }

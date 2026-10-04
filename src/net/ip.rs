@@ -11,11 +11,9 @@ pub fn parse_interface(s: &str) -> Result<datalink::NetworkInterface, String> {
 }
 
 pub fn find_ipv4(interface: &datalink::NetworkInterface) -> Option<Ipv4Addr> {
-    interface.ips.iter().find_map(|ip| {
-        match ip {
-            ipnetwork::IpNetwork::V4(ipv4) => Some(ipv4.ip()),
-            _ => None,
-        }
+    interface.ips.iter().find_map(|ip| match ip {
+        ipnetwork::IpNetwork::V4(ipv4) => Some(ipv4.ip()),
+        _ => None,
     })
 }
 
@@ -44,7 +42,7 @@ mod tests {
         IpNetwork::V6(Ipv6Network::new(addr, prefix).unwrap())
     }
 
-     #[test]
+    #[test]
     fn find_ipv4_returns_none_when_no_ips() {
         let iface = make_interface("eth0", vec![]);
         assert_eq!(find_ipv4(&iface), None);
@@ -75,7 +73,11 @@ mod tests {
     fn find_ipv4_returns_first_when_multiple_ipv4() {
         let iface = make_interface(
             "eth0",
-            vec![v4(10, 0, 0, 1, 8), v4(172, 16, 0, 1, 12), v4(192, 168, 0, 1, 24)],
+            vec![
+                v4(10, 0, 0, 1, 8),
+                v4(172, 16, 0, 1, 12),
+                v4(192, 168, 0, 1, 24),
+            ],
         );
         assert_eq!(find_ipv4(&iface), Some(Ipv4Addr::new(10, 0, 0, 1)));
     }
@@ -86,7 +88,7 @@ mod tests {
         assert_eq!(find_ipv4(&iface), Some(Ipv4Addr::new(192, 168, 1, 77)));
     }
 
-   #[test]
+    #[test]
     fn parse_interface_errors_for_unknown_name() {
         let name = "definitely-not-a-real-interface-xyz";
         let err = parse_interface(name).unwrap_err();

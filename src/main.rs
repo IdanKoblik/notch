@@ -1,20 +1,20 @@
 use clap::{Parser, Subcommand};
 
 mod cmd;
+mod crypto;
 mod net;
 mod steg;
-mod crypto;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-   #[command(subcommand)]
+    #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    Inject(cmd::inject::InjectCmd)
+    Inject(cmd::inject::InjectCmd),
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

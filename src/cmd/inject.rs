@@ -1,19 +1,19 @@
-use std::fs::File;
-use std::io::prelude::Read;
-use std::{env, io};
-use std::io::{ErrorKind};
-use std::net::{Ipv4Addr};
-use std::time::{Duration, Instant};
-use clap::Args;
-use pnet::datalink::{NetworkInterface};
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::transport::{transport_channel, TransportChannelType, TransportProtocol};
-use sha2::{Digest, Sha256};
-use hmac::{Hmac, KeyInit, Mac};
 use crate::crypto::num::encrypt_u32;
 use crate::net::ip::{find_ipv4, parse_interface};
 use crate::net::tcp::{self, construct_tcp_syn, send_syn};
-use crate::steg::isn::{Flags, IsnPacket, Command};
+use crate::steg::isn::{Command, Flags, IsnPacket};
+use clap::Args;
+use hmac::{Hmac, KeyInit, Mac};
+use pnet::datalink::NetworkInterface;
+use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::transport::{TransportChannelType, TransportProtocol, transport_channel};
+use sha2::{Digest, Sha256};
+use std::fs::File;
+use std::io::ErrorKind;
+use std::io::prelude::Read;
+use std::net::Ipv4Addr;
+use std::time::{Duration, Instant};
+use std::{env, io};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -57,7 +57,7 @@ pub struct InjectCmd {
     #[arg(short, long, value_parser = parse_interface)]
     interface: NetworkInterface,
 
-    #[arg(long="no-auth", default_value_t = false)]
+    #[arg(long = "no-auth", default_value_t = false)]
     no_auth: bool,
 
     #[arg(long, default_value = "")]
@@ -80,12 +80,12 @@ impl InjectCmd {
         }
 
         let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
-        let protocol = TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
-        let (mut tx, _rx) = transport_channel(4096, protocol)
-            .map_err(|e| match e.kind() {
-                ErrorKind::PermissionDenied => Error::PermissionDenied,
-                _ => Error::Io(e),
-            })?;
+        let protocol =
+            TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
+        let (mut tx, _rx) = transport_channel(4096, protocol).map_err(|e| match e.kind() {
+            ErrorKind::PermissionDenied => Error::PermissionDenied,
+            _ => Error::Io(e),
+        })?;
 
         let mut src: Box<dyn Read> = if self.payload.is_empty() {
             Box::new(io::stdin().lock())
@@ -98,7 +98,10 @@ impl InjectCmd {
         if !self.no_auth {
             let raw_secret = env::var("SECRET").map_err(|_| Error::MissingSecret)?;
             let secret_bytes: [u8; 32] = Sha256::digest(raw_secret.as_bytes()).into();
-            mac = Some(HmacSha256::new_from_slice(&secret_bytes).map_err(|_| Error::InvalidSecretLength)?);
+            mac = Some(
+                HmacSha256::new_from_slice(&secret_bytes)
+                    .map_err(|_| Error::InvalidSecretLength)?,
+            );
             secret = Some(secret_bytes);
         }
 
@@ -157,13 +160,7 @@ impl InjectCmd {
                 encrypt_u32(raw_isn, &secret.unwrap())
             };
 
-            let tcp = construct_tcp_syn(
-                source,
-                self.dest,
-                self.source_port,
-                self.dest_port,
-                isn,
-            )?;
+            let tcp = construct_tcp_syn(source, self.dest, self.source_port, self.dest_port, isn)?;
 
             if self.verbose {
                 eprintln!("isn: 0x{isn:08x}");
