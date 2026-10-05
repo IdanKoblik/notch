@@ -13,7 +13,7 @@ use std::io::ErrorKind;
 use std::io::prelude::Read;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
-use std::{env, io};
+use std::{env, fs::OpenOptions, io};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -35,6 +35,9 @@ pub enum Error {
 
     #[error("packet rate must be a finite, nonnegative value")]
     InvalidPacketRate,
+
+    #[error("could not open terminal for confirmation")]
+    ConfirmationUnavailable,
 
     #[error("failed to construct TCP packet: {0}")]
     Tcp(#[from] tcp::Error),
@@ -80,6 +83,54 @@ impl InjectCmd {
         }
 
         let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
+
+        eprintln!("Injection details:");
+        eprintln!("  source: {} ({})", source, self.interface.name);
+        eprintln!("  destination: {}:{}", self.dest, self.dest_port);
+        eprintln!("  source port: {}", self.source_port);
+        eprintln!(
+            "  authentication: {}",
+            if self.no_auth { "disabled" } else { "enabled" }
+        );
+        eprintln!(
+            "  payload: {}",
+            if self.payload.is_empty() {
+                "standard input"
+            } else {
+                self.payload.as_str()
+            }
+        );
+        let chunk_size = if self.no_auth { 4 } else { 2 };
+        if self.payload.is_empty() {
+            eprintln!("  packets: unknown (payload is read from standard input)");
+        } else {
+            let bytes = std::fs::metadata(&self.payload)?.len();
+            eprintln!(
+                "  packets: {} complete commands ({} payload bytes / {} bytes per packet)",
+                bytes / chunk_size as u64,
+                bytes,
+                chunk_size
+            );
+            if bytes % chunk_size as u64 != 0 {
+                eprintln!(
+                    "  note: trailing incomplete payload bytes will cause an error after complete commands are sent"
+                );
+            }
+        }
+        if self.rate == 0.0 {
+            eprintln!("  packet pacing: none (maximum send rate; potentially high network noise)");
+            eprintln!("WARNING: this injection is unpaced and may create high network noise.");
+        } else {
+            eprintln!("  maximum packet rate: {:.2} packets/second", self.rate);
+            if self.rate >= 1000.0 {
+                eprintln!("WARNING: this packet rate may create high network noise.");
+            }
+        }
+        if !confirm_injection()? {
+            eprintln!("injection cancelled");
+            return Ok(());
+        }
+
         let protocol =
             TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
         let (mut tx, _rx) = transport_channel(4096, protocol).map_err(|e| match e.kind() {
@@ -105,7 +156,6 @@ impl InjectCmd {
             secret = Some(secret_bytes);
         }
 
-        let chunk_size = if self.no_auth { 4 } else { 2 };
         let mut index: u8 = 0;
         let mut first = true;
         let mut packets_sent: u64 = 0;
@@ -196,6 +246,25 @@ impl InjectCmd {
         eprintln!("sent {packets_sent} packets");
         Ok(())
     }
+}
+
+fn confirm_injection() -> Result<bool, Error> {
+    use std::io::{BufRead, Write};
+
+    let tty = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| Error::ConfirmationUnavailable)?;
+    let mut tty = io::BufReader::new(tty);
+    write!(tty.get_mut(), "Proceed with injection? [y/N] ")?;
+    tty.get_mut().flush()?;
+    let mut answer = String::new();
+    tty.read_line(&mut answer)?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 fn read_command(src: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
