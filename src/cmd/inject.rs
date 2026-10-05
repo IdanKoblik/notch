@@ -63,7 +63,7 @@ pub struct InjectCmd {
     #[arg(long = "no-auth", default_value_t = false)]
     no_auth: bool,
 
-    #[arg(long, default_value = "")]
+    #[arg(long, default_value = "", help="Payload to inject. Alternatively, pipe the payload through stdin.")]
     payload: String,
 
     /// Maximum packets per second, 0 sends without pacing.
