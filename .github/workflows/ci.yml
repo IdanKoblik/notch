@@ -109,22 +109,32 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
 
   # ---------------------------------------------------------------------------
-  # Build release binaries for x86_64 and aarch64 (ARM64) Linux.
+  # Build release binaries for x86_64 + aarch64 (ARM64) Linux, and aarch64
+  # (Apple Silicon) macOS. No Intel (x86_64) macOS build.
   # ---------------------------------------------------------------------------
   build:
-    name: Build (${{ matrix.arch }})
+    name: Build (${{ matrix.arch }}-${{ matrix.os_name }})
     needs: [changelog, test, lint]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
+            os_name: linux
+            os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             cross: false
           - arch: aarch64
+            os_name: linux
+            os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             cross: true
+          - arch: aarch64
+            os_name: macos
+            os: macos-latest
+            target: aarch64-apple-darwin
+            cross: false
     steps:
       - uses: actions/checkout@v7
 
@@ -152,13 +162,13 @@ jobs:
 
       - name: Package binary
         run: |
-          out="${BIN_NAME}-${{ matrix.arch }}-linux"
+          out="${BIN_NAME}-${{ matrix.arch }}-${{ matrix.os_name }}"
           cp "target/${{ matrix.target }}/release/${BIN_NAME}" "$out"
           echo "ASSET=$out" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.BIN_NAME }}-${{ matrix.arch }}-linux
+          name: ${{ env.BIN_NAME }}-${{ matrix.arch }}-${{ matrix.os_name }}
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
