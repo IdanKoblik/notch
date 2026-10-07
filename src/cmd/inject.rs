@@ -1,9 +1,13 @@
+use crate::cli::ask::confirm;
+use crate::cmd::inject::CovertChannel::SynIsn;
+use crate::cmd::inject::OutputFormat::Pcap;
 use crate::crypto::num::encrypt_u32;
 use crate::net::ip::{find_ipv4, parse_interface};
 use crate::net::tcp::{self, construct_tcp_syn, send_syn};
 use crate::steg::isn::{Command, Flags, IsnPacket};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use hmac::{Hmac, KeyInit, Mac};
+use pcap::{Active, Capture};
 use pnet::datalink::NetworkInterface;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::transport::{TransportChannelType, TransportProtocol, transport_channel};
@@ -36,14 +40,29 @@ pub enum Error {
     #[error("packet rate must be a finite, nonnegative value")]
     InvalidPacketRate,
 
-    #[error("could not open terminal for confirmation")]
-    ConfirmationUnavailable,
-
     #[error("failed to construct TCP packet: {0}")]
     Tcp(#[from] tcp::Error),
 
+    #[error("CLI error")]
+    Cli(#[from] crate::cli::Error),
+
+    #[error("Pcap error {0}")]
+    Pcap(#[from] pcap::Error),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum OutputFormat {
+    None,
+    Pcap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum CovertChannel {
+    #[value(name = "syn-isn")]
+    SynIsn
 }
 
 #[derive(Args)]
@@ -76,24 +95,23 @@ pub struct InjectCmd {
 
     #[arg(long, default_value_t = false)]
     verbose: bool,
+
+    #[arg(long = "output", value_enum, default_value_t = OutputFormat::None)]
+    output_format: OutputFormat,
+
+    #[arg(long, value_enum, default_value_t = CovertChannel::SynIsn)]
+    channel: CovertChannel,
 }
 
 type HmacSha256 = Hmac<Sha256>;
 
 impl InjectCmd {
-    pub fn run(&self) -> Result<(), Error> {
-        if !self.rate.is_finite() || self.rate < 0.0 {
-            return Err(Error::InvalidPacketRate);
-        }
-
-        let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
-
+    fn print_details(&self, source: Ipv4Addr) {
         eprintln!("Injection details:");
         eprintln!("  source: {} ({})", source, self.interface.name);
         eprintln!("  destination: {}:{}", self.dest, self.dest_port);
         eprintln!("  source port: {}", self.source_port);
-        eprintln!(
-            "  authentication: {}",
+        eprintln!( "  authentication: {}",
             if self.no_auth { "disabled" } else { "enabled" }
         );
         eprintln!(
@@ -104,6 +122,36 @@ impl InjectCmd {
                 self.payload.as_str()
             }
         );
+    }
+
+    fn get_network_cap(&self, interface_name: &str) -> Result<(Capture<Active>, Capture<Active>), pcap::Error> {
+        let mut rx_cap = Capture::from_device(interface_name)?
+            .promisc(true)
+            .snaplen(65535)
+            .immediate_mode(true) // Delivers packets instantly
+            .open()?;
+
+        if self.channel == SynIsn {
+            rx_cap.filter("tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0", true)?;
+        }
+
+        rx_cap.filter(format!("tcp port {}", self.source_port).as_str(), true)?;
+
+        let mut tx_cap = Capture::from_device(interface_name)?
+            .open()?;
+
+        Ok((rx_cap, tx_cap))
+    }
+
+    pub fn run(&self) -> Result<(), Error> {
+        if !self.rate.is_finite() || self.rate < 0.0 {
+            return Err(Error::InvalidPacketRate);
+        }
+
+        let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
+
+        self.print_details(source);
+
         let chunk_size = if self.no_auth { 4 } else { 2 };
         if self.payload.is_empty() {
             eprintln!("  packets: unknown (payload is read from standard input)");
@@ -121,16 +169,13 @@ impl InjectCmd {
                 );
             }
         }
+
         if self.rate == 0.0 {
             eprintln!("  packet pacing: none (maximum send rate; potentially high network noise)");
             eprintln!("WARNING: this injection is unpaced and may create high network noise.");
-        } else {
-            eprintln!("  maximum packet rate: {:.2} packets/second", self.rate);
-            if self.rate >= 1000.0 {
-                eprintln!("WARNING: this packet rate may create high network noise.");
-            }
         }
-        if !confirm_injection()? {
+
+        if !confirm()? {
             eprintln!("injection cancelled");
             return Ok(());
         }
@@ -176,7 +221,6 @@ impl InjectCmd {
         loop {
             let mut current = vec![0u8; chunk_size];
             let n = read_command(&mut src, &mut current)?;
-
             if n == 0 {
                 break;
             }
@@ -186,7 +230,6 @@ impl InjectCmd {
             }
 
             let is_last = n < chunk_size;
-
             let flags = if first {
                 Flags::Start
             } else if is_last {
@@ -250,25 +293,6 @@ impl InjectCmd {
         eprintln!("sent {packets_sent} packets");
         Ok(())
     }
-}
-
-fn confirm_injection() -> Result<bool, Error> {
-    use std::io::{BufRead, Write};
-
-    let tty = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .map_err(|_| Error::ConfirmationUnavailable)?;
-    let mut tty = io::BufReader::new(tty);
-    write!(tty.get_mut(), "Proceed with injection? [y/N] ")?;
-    tty.get_mut().flush()?;
-    let mut answer = String::new();
-    tty.read_line(&mut answer)?;
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
 }
 
 fn read_command(src: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
