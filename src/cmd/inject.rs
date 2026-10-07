@@ -1,8 +1,11 @@
+use crate::cli::ask::confirm;
+use crate::cmd::inject::OutputFormat::Pcap;
 use crate::crypto::num::encrypt_u32;
 use crate::net::ip::{find_ipv4, parse_interface};
+use crate::net::pcap_capture::PcapCapture;
 use crate::net::tcp::{self, construct_tcp_syn, send_syn};
 use crate::steg::isn::{Command, Flags, IsnPacket};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use hmac::{Hmac, KeyInit, Mac};
 use pnet::datalink::NetworkInterface;
 use pnet::packet::ip::IpNextHeaderProtocols;
@@ -13,7 +16,7 @@ use std::io::ErrorKind;
 use std::io::prelude::Read;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
-use std::{env, fs::OpenOptions, io};
+use std::{env, io};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -30,20 +33,32 @@ pub enum Error {
     #[error("invalid HMAC secret length")]
     InvalidSecretLength,
 
-    #[error("payload ended with an incomplete command; expected {0} bytes per command")]
-    IncompletePayload(usize),
-
     #[error("packet rate must be a finite, nonnegative value")]
     InvalidPacketRate,
-
-    #[error("could not open terminal for confirmation")]
-    ConfirmationUnavailable,
 
     #[error("failed to construct TCP packet: {0}")]
     Tcp(#[from] tcp::Error),
 
+    #[error("CLI error")]
+    Cli(#[from] crate::cli::Error),
+
+    #[error("Pcap error {0}")]
+    Pcap(#[from] pcap::Error),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum OutputFormat {
+    None,
+    Pcap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum CovertChannel {
+    #[value(name = "syn-isn")]
+    SynIsn,
 }
 
 #[derive(Args)]
@@ -76,18 +91,18 @@ pub struct InjectCmd {
 
     #[arg(long, default_value_t = false)]
     verbose: bool,
+
+    #[arg(long = "output", value_enum, default_value_t = OutputFormat::None)]
+    output_format: OutputFormat,
+
+    #[arg(long, value_enum, default_value_t = CovertChannel::SynIsn)]
+    channel: CovertChannel,
 }
 
 type HmacSha256 = Hmac<Sha256>;
 
 impl InjectCmd {
-    pub fn run(&self) -> Result<(), Error> {
-        if !self.rate.is_finite() || self.rate < 0.0 {
-            return Err(Error::InvalidPacketRate);
-        }
-
-        let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
-
+    fn print_details(&self, source: Ipv4Addr) {
         eprintln!("Injection details:");
         eprintln!("  source: {} ({})", source, self.interface.name);
         eprintln!("  destination: {}:{}", self.dest, self.dest_port);
@@ -104,36 +119,64 @@ impl InjectCmd {
                 self.payload.as_str()
             }
         );
+    }
+
+    pub fn run(&self) -> Result<(), Error> {
+        if !self.rate.is_finite() || self.rate < 0.0 {
+            return Err(Error::InvalidPacketRate);
+        }
+
+        let (mac, secret) = if self.no_auth {
+            (None, None)
+        } else {
+            let raw_secret = env::var("SECRET").map_err(|_| Error::MissingSecret)?;
+            let secret: [u8; 32] = Sha256::digest(raw_secret.as_bytes()).into();
+            let mac =
+                HmacSha256::new_from_slice(&secret).map_err(|_| Error::InvalidSecretLength)?;
+            (Some(mac), Some(secret))
+        };
+
+        let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
+
+        self.print_details(source);
+
         let chunk_size = if self.no_auth { 4 } else { 2 };
         if self.payload.is_empty() {
             eprintln!("  packets: unknown (payload is read from standard input)");
         } else {
             let bytes = std::fs::metadata(&self.payload)?.len();
             eprintln!(
-                "  packets: {} complete commands ({} payload bytes / {} bytes per packet)",
-                bytes / chunk_size as u64,
+                "  packets: {} commands ({} payload bytes / {} bytes per packet)",
+                bytes.div_ceil(chunk_size as u64),
                 bytes,
                 chunk_size
             );
             if bytes % chunk_size as u64 != 0 {
-                eprintln!(
-                    "  note: trailing incomplete payload bytes will cause an error after complete commands are sent"
-                );
+                eprintln!("  note: the final command will be zero-padded to {chunk_size} bytes");
             }
         }
+
         if self.rate == 0.0 {
             eprintln!("  packet pacing: none (maximum send rate; potentially high network noise)");
             eprintln!("WARNING: this injection is unpaced and may create high network noise.");
-        } else {
-            eprintln!("  maximum packet rate: {:.2} packets/second", self.rate);
-            if self.rate >= 1000.0 {
-                eprintln!("WARNING: this packet rate may create high network noise.");
-            }
         }
-        if !confirm_injection()? {
+
+        if !confirm()? {
             eprintln!("injection cancelled");
             return Ok(());
         }
+
+        let mut pcap_output = if self.output_format == Pcap {
+            let path = "inject.pcap";
+            eprintln!("writing injected packets to {path}");
+            let filter = format!(
+                "tcp and src host {source} and dst host {} and src port {} and dst port {}",
+                self.dest, self.source_port, self.dest_port
+            );
+            Some(PcapCapture::start(&self.interface.name, &filter, path)?)
+        } else {
+            None
+        };
 
         let protocol =
             TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
@@ -147,18 +190,6 @@ impl InjectCmd {
         } else {
             Box::new(File::open(&self.payload)?)
         };
-
-        let mut mac = None;
-        let mut secret: Option<[u8; 32]> = None;
-        if !self.no_auth {
-            let raw_secret = env::var("SECRET").map_err(|_| Error::MissingSecret)?;
-            let secret_bytes: [u8; 32] = Sha256::digest(raw_secret.as_bytes()).into();
-            mac = Some(
-                HmacSha256::new_from_slice(&secret_bytes)
-                    .map_err(|_| Error::InvalidSecretLength)?,
-            );
-            secret = Some(secret_bytes);
-        }
 
         let mut index: u8 = 0;
         let mut first = true;
@@ -176,24 +207,16 @@ impl InjectCmd {
         loop {
             let mut current = vec![0u8; chunk_size];
             let n = read_command(&mut src, &mut current)?;
-
             if n == 0 {
                 break;
             }
 
-            if n != chunk_size {
-                return Err(Error::IncompletePayload(chunk_size));
-            }
-
             let is_last = n < chunk_size;
-
-            let flags = if first {
-                Flags::Start
-            } else if is_last {
-                Flags::End
+            let flags = (if first {
+                Flags::Start as u8
             } else {
-                Flags::None
-            };
+                Flags::None as u8
+            }) | if is_last { Flags::End as u8 } else { 0 };
 
             let isn = if self.no_auth {
                 u32::from_be_bytes(current[..4].try_into().unwrap())
@@ -206,7 +229,7 @@ impl InjectCmd {
                 let auth_tag = m.finalize().into_bytes()[index as usize];
 
                 let cmd = Command::Ping { value: raw };
-                let packet = IsnPacket::new(auth_tag, flags as u8, index, cmd);
+                let packet = IsnPacket::new(auth_tag, flags, index, cmd);
 
                 index = index.wrapping_add(1);
 
@@ -247,28 +270,12 @@ impl InjectCmd {
             }
         }
 
+        if let Some(output) = pcap_output.take() {
+            output.finish()?;
+        }
         eprintln!("sent {packets_sent} packets");
         Ok(())
     }
-}
-
-fn confirm_injection() -> Result<bool, Error> {
-    use std::io::{BufRead, Write};
-
-    let tty = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .map_err(|_| Error::ConfirmationUnavailable)?;
-    let mut tty = io::BufReader::new(tty);
-    write!(tty.get_mut(), "Proceed with injection? [y/N] ")?;
-    tty.get_mut().flush()?;
-    let mut answer = String::new();
-    tty.read_line(&mut answer)?;
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
 }
 
 fn read_command(src: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
