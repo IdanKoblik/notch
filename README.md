@@ -50,3 +50,12 @@ running with `sudo`).
 
 Run `notch inject --help` for all options. This project is in active development;
 there is no receiver command yet.
+
+## Formatting & linting
+
+A repo pre-commit hook (`.githooks/pre-commit`) checks
+formatting before each commit — enable it with:
+
+```bash
+git config core.hooksPath .githooks
+```
