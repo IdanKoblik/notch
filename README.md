@@ -5,7 +5,7 @@
 > authorized to test. You are responsible for how you use it and for complying
 > with applicable laws; use it at your own risk.
 
-`notch` is a work-in-progress network steganography tool. Prebuilt downloads,
+Work-in-progress network steganography tool. Prebuilt downloads,
 when available, are published on [GitHub Releases](https://github.com/IdanKoblik/notch/releases).
 
 ## Injection Methods
