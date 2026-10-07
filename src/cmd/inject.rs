@@ -1,13 +1,12 @@
 use crate::cli::ask::confirm;
-use crate::cmd::inject::CovertChannel::SynIsn;
 use crate::cmd::inject::OutputFormat::Pcap;
 use crate::crypto::num::encrypt_u32;
 use crate::net::ip::{find_ipv4, parse_interface};
+use crate::net::pcap_capture::PcapCapture;
 use crate::net::tcp::{self, construct_tcp_syn, send_syn};
 use crate::steg::isn::{Command, Flags, IsnPacket};
 use clap::{Args, ValueEnum};
 use hmac::{Hmac, KeyInit, Mac};
-use pcap::{Active, Capture};
 use pnet::datalink::NetworkInterface;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::transport::{TransportChannelType, TransportProtocol, transport_channel};
@@ -17,7 +16,7 @@ use std::io::ErrorKind;
 use std::io::prelude::Read;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
-use std::{env, fs::OpenOptions, io};
+use std::{env, io};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -33,9 +32,6 @@ pub enum Error {
 
     #[error("invalid HMAC secret length")]
     InvalidSecretLength,
-
-    #[error("payload ended with an incomplete command; expected {0} bytes per command")]
-    IncompletePayload(usize),
 
     #[error("packet rate must be a finite, nonnegative value")]
     InvalidPacketRate,
@@ -62,7 +58,7 @@ pub enum OutputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum CovertChannel {
     #[value(name = "syn-isn")]
-    SynIsn
+    SynIsn,
 }
 
 #[derive(Args)]
@@ -111,7 +107,8 @@ impl InjectCmd {
         eprintln!("  source: {} ({})", source, self.interface.name);
         eprintln!("  destination: {}:{}", self.dest, self.dest_port);
         eprintln!("  source port: {}", self.source_port);
-        eprintln!( "  authentication: {}",
+        eprintln!(
+            "  authentication: {}",
             if self.no_auth { "disabled" } else { "enabled" }
         );
         eprintln!(
@@ -124,29 +121,20 @@ impl InjectCmd {
         );
     }
 
-    fn get_network_cap(&self, interface_name: &str) -> Result<(Capture<Active>, Capture<Active>), pcap::Error> {
-        let mut rx_cap = Capture::from_device(interface_name)?
-            .promisc(true)
-            .snaplen(65535)
-            .immediate_mode(true) // Delivers packets instantly
-            .open()?;
-
-        if self.channel == SynIsn {
-            rx_cap.filter("tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0", true)?;
-        }
-
-        rx_cap.filter(format!("tcp port {}", self.source_port).as_str(), true)?;
-
-        let mut tx_cap = Capture::from_device(interface_name)?
-            .open()?;
-
-        Ok((rx_cap, tx_cap))
-    }
-
     pub fn run(&self) -> Result<(), Error> {
         if !self.rate.is_finite() || self.rate < 0.0 {
             return Err(Error::InvalidPacketRate);
         }
+
+        let (mac, secret) = if self.no_auth {
+            (None, None)
+        } else {
+            let raw_secret = env::var("SECRET").map_err(|_| Error::MissingSecret)?;
+            let secret: [u8; 32] = Sha256::digest(raw_secret.as_bytes()).into();
+            let mac =
+                HmacSha256::new_from_slice(&secret).map_err(|_| Error::InvalidSecretLength)?;
+            (Some(mac), Some(secret))
+        };
 
         let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
 
@@ -158,15 +146,13 @@ impl InjectCmd {
         } else {
             let bytes = std::fs::metadata(&self.payload)?.len();
             eprintln!(
-                "  packets: {} complete commands ({} payload bytes / {} bytes per packet)",
-                bytes / chunk_size as u64,
+                "  packets: {} commands ({} payload bytes / {} bytes per packet)",
+                bytes.div_ceil(chunk_size as u64),
                 bytes,
                 chunk_size
             );
             if bytes % chunk_size as u64 != 0 {
-                eprintln!(
-                    "  note: trailing incomplete payload bytes will cause an error after complete commands are sent"
-                );
+                eprintln!("  note: the final command will be zero-padded to {chunk_size} bytes");
             }
         }
 
@@ -180,6 +166,18 @@ impl InjectCmd {
             return Ok(());
         }
 
+        let mut pcap_output = if self.output_format == Pcap {
+            let path = "inject.pcap";
+            eprintln!("writing injected packets to {path}");
+            let filter = format!(
+                "tcp and src host {source} and dst host {} and src port {} and dst port {}",
+                self.dest, self.source_port, self.dest_port
+            );
+            Some(PcapCapture::start(&self.interface.name, &filter, path)?)
+        } else {
+            None
+        };
+
         let protocol =
             TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
         let (mut tx, _rx) = transport_channel(4096, protocol).map_err(|e| match e.kind() {
@@ -192,18 +190,6 @@ impl InjectCmd {
         } else {
             Box::new(File::open(&self.payload)?)
         };
-
-        let mut mac = None;
-        let mut secret: Option<[u8; 32]> = None;
-        if !self.no_auth {
-            let raw_secret = env::var("SECRET").map_err(|_| Error::MissingSecret)?;
-            let secret_bytes: [u8; 32] = Sha256::digest(raw_secret.as_bytes()).into();
-            mac = Some(
-                HmacSha256::new_from_slice(&secret_bytes)
-                    .map_err(|_| Error::InvalidSecretLength)?,
-            );
-            secret = Some(secret_bytes);
-        }
 
         let mut index: u8 = 0;
         let mut first = true;
@@ -225,18 +211,12 @@ impl InjectCmd {
                 break;
             }
 
-            if n != chunk_size {
-                return Err(Error::IncompletePayload(chunk_size));
-            }
-
             let is_last = n < chunk_size;
-            let flags = if first {
-                Flags::Start
-            } else if is_last {
-                Flags::End
+            let flags = (if first {
+                Flags::Start as u8
             } else {
-                Flags::None
-            };
+                Flags::None as u8
+            }) | if is_last { Flags::End as u8 } else { 0 };
 
             let isn = if self.no_auth {
                 u32::from_be_bytes(current[..4].try_into().unwrap())
@@ -249,7 +229,7 @@ impl InjectCmd {
                 let auth_tag = m.finalize().into_bytes()[index as usize];
 
                 let cmd = Command::Ping { value: raw };
-                let packet = IsnPacket::new(auth_tag, flags as u8, index, cmd);
+                let packet = IsnPacket::new(auth_tag, flags, index, cmd);
 
                 index = index.wrapping_add(1);
 
@@ -290,6 +270,9 @@ impl InjectCmd {
             }
         }
 
+        if let Some(output) = pcap_output.take() {
+            output.finish()?;
+        }
         eprintln!("sent {packets_sent} packets");
         Ok(())
     }
