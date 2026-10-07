@@ -20,4 +20,3 @@ pub fn confirm() -> Result<bool, super::Error> {
         "y" | "yes"
     ))
 }
-
