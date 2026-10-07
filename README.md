@@ -10,10 +10,10 @@ when available, are published on [GitHub Releases](https://github.com/IdanKoblik
 
 ## Injection Methods
 
-| Method | Status | Details |
-| --- | --- | --- |
-| TCP SYN ISN injection | Available | Encodes payload data in the Initial Sequence Number (ISN) of TCP SYN packets. |
-| ICMP | In progress | Planned transport method. |
+| Method                | Status      | Details                                                                       |
+| --------------------- | ----------- | ----------------------------------------------------------------------------- |
+| TCP SYN ISN injection | Available   | Encodes payload data in the Initial Sequence Number (ISN) of TCP SYN packets. |
+| ICMP                  | In progress | Planned transport method.                                                     |
 
 > Authenticated injection - Uses `SECRET` to authenticate encoded data.  
 >
