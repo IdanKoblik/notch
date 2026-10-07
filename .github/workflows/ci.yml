@@ -80,6 +80,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install libpcap development files
+        run: sudo apt-get update && sudo apt-get install --yes libpcap-dev
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -95,6 +98,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: Install libpcap development files
+        run: sudo apt-get update && sudo apt-get install --yes libpcap-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -137,6 +143,10 @@ jobs:
             cross: false
     steps:
       - uses: actions/checkout@v7
+
+      - name: Install libpcap development files
+        if: ${{ matrix.os == 'ubuntu-latest' && !matrix.cross }}
+        run: sudo apt-get update && sudo apt-get install --yes libpcap-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
