@@ -1,4 +1,5 @@
 use crate::cli::ask::confirm;
+use crate::cli::progress::make_progress;
 use crate::cmd::inject::OutputFormat::Pcap;
 use crate::crypto::num::encrypt_u32;
 use crate::net::ip::{find_ipv4, parse_interface};
@@ -141,10 +142,15 @@ impl InjectCmd {
         self.print_details(source);
 
         let chunk_size = if self.no_auth { 4 } else { 2 };
+        let total_bytes = if self.payload.is_empty() {
+            None
+        } else {
+            Some(std::fs::metadata(&self.payload)?.len())
+        };
         if self.payload.is_empty() {
             eprintln!("  packets: unknown (payload is read from standard input)");
         } else {
-            let bytes = std::fs::metadata(&self.payload)?.len();
+            let bytes = total_bytes.unwrap();
             eprintln!(
                 "  packets: {} commands ({} payload bytes / {} bytes per packet)",
                 bytes.div_ceil(chunk_size as u64),
@@ -203,6 +209,7 @@ impl InjectCmd {
             None
         };
         let mut next_packet = Instant::now();
+        let progress = make_progress(total_bytes);
 
         loop {
             let mut current = vec![0u8; chunk_size];
@@ -252,6 +259,8 @@ impl InjectCmd {
 
             send_syn(&mut tx, &tcp, self.dest)?;
             packets_sent += 1;
+            progress.inc(n as u64);
+            progress.set_message(format!("{packets_sent} packets"));
 
             if let Some(period) = packet_period {
                 next_packet += period;
@@ -273,6 +282,7 @@ impl InjectCmd {
         if let Some(output) = pcap_output.take() {
             output.finish()?;
         }
+        progress.finish_and_clear();
         eprintln!("sent {packets_sent} packets");
         Ok(())
     }

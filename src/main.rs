@@ -1,10 +1,10 @@
 use clap::{Parser, Subcommand};
 
+mod cli;
 mod cmd;
 mod crypto;
 mod net;
 mod steg;
-mod cli;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]

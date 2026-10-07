@@ -17,3 +17,4 @@ target
 .venv/
 
 lab/video/__pycache__/
+*.pcap
