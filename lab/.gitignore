@@ -2,3 +2,7 @@
 # The overlay dir itself is recreated on each run (mkdir -p), so only ignore
 # its contents, not the tracked board/<role>/rootfs/etc/ config files.
 board/*/rootfs/usr/bin/*
+
+# Generated QEMU images (bzImage, rootfs.ext2) — rebuilt by qemu/run.sh via
+# Buildroot. Reproducible build artifacts; distribute prebuilts via Releases.
+images/

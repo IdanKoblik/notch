@@ -51,6 +51,31 @@ running with `sudo`).
 Run `notch inject --help` for all options. This project is in active development;
 there is no receiver command yet.
 
+## QEMU lab
+
+The `lab/` directory is a [Buildroot](https://buildroot.org/) `BR2_EXTERNAL`
+tree that boots `notch` inside QEMU VMs on an isolated L2 network. Three scripts
+in `lab/qemu/` drive it:
+
+| Script            | Run as | Purpose                                                                                   |
+| ----------------- | ------ | ----------------------------------------------------------------------------------------- |
+| `bridge-up.sh`    | root   | Create the isolated bridge `br-notch` and per-node tap(s), owned by your user.            |
+| `run.sh`          | you    | Build `notch`, bake it into the role's rootfs via Buildroot, and boot it under QEMU.      |
+| `bridge-down.sh`  | root   | Remove the tap(s) and the bridge once empty.                                              |
+
+Typical session (from `lab/`):
+
+```sh
+sudo ./qemu/bridge-up.sh sender     # once per boot session; creates tap-sender
+./qemu/run.sh sender                # as your user — do NOT sudo (it builds with your Rust toolchain)
+sudo ./qemu/bridge-down.sh sender   # tear down when done
+```
+
+`run.sh` auto-discovers a Buildroot checkout (override with `BUILDROOT=/path`);
+`NO_BUILD=1` boots the existing image without rebuilding. Add more nodes by
+naming them, e.g. `sudo ./qemu/bridge-up.sh sender receiver` — each needs its
+own `configs/<role>_defconfig` and `board/<role>/`.
+
 ## Formatting & linting
 
 A repo pre-commit hook (`.githooks/pre-commit`) checks
