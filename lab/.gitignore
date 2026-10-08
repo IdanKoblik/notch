@@ -6,3 +6,9 @@ board/*/rootfs/usr/bin/*
 # Generated QEMU images (bzImage, rootfs.ext2) — rebuilt by qemu/run.sh via
 # Buildroot. Reproducible build artifacts; distribute prebuilts via Releases.
 images/
+
+# Python analysis artifacts
+__pycache__/
+.venv/
+captures/
+results/

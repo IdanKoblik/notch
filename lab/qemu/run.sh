@@ -114,14 +114,26 @@ if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
   info "using KVM acceleration"
 fi
 
+# Display: headless on the terminal by default; GUI=1 opens a QEMU window while
+# keeping the serial console on stdio (so pexpect/automation still drives it).
+# 'quiet loglevel=3' keeps kernel printk (e.g. e1000 link-up) from interleaving
+# with — and corrupting — commands typed on the serial console by automation.
+APPEND="rootwait root=/dev/vda console=ttyS0 quiet loglevel=3"
+DISPLAY_ARGS=(-nographic)
+if [ "${GUI:-0}" = "1" ]; then
+  APPEND="$APPEND console=tty0"     # also render the console in the graphical window
+  DISPLAY_ARGS=(-serial stdio)      # window shown by the default UI; serial -> stdio
+  info "GUI mode: opening a QEMU window (serial still on stdio)"
+fi
+
 info "booting $ROLE: $KERNEL + $FS"
 exec "$QEMU" \
   "${ACCEL[@]}" \
   -m "$QEMU_MEM" \
   -kernel "$KERNEL" \
-  -append "rootwait root=/dev/vda console=ttyS0" \
+  -append "$APPEND" \
   -drive "file=$FS,format=raw,if=virtio" \
   -netdev "tap,id=net0,ifname=$TAP,script=no,downscript=no" \
   -device "e1000,netdev=net0" \
-  -nographic \
+  "${DISPLAY_ARGS[@]}" \
   "${QEMU_EXTRA[@]}"
