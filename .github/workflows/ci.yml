@@ -176,7 +176,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/${BIN_NAME}" "$out"
           echo "ASSET=$out" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ env.BIN_NAME }}-${{ matrix.arch }}-${{ matrix.os_name }}
           path: ${{ env.ASSET }}
