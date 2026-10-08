@@ -55,6 +55,8 @@ running with `sudo`).
 Run `notch inject --help` for all options. This project is in active development;
 there is no receiver command yet.
 
+[![Usage](assets/usage.png)](https://www.youtube.com/watch?v=Sb-RUjxPXJo)
+
 ## QEMU lab
 
 The `lab/` directory is a [Buildroot](https://buildroot.org/) `BR2_EXTERNAL`
@@ -74,6 +76,20 @@ sudo ./qemu/bridge-up.sh sender     # once per boot session; creates tap-sender
 ./qemu/run.sh sender                # as your user — do NOT sudo (it builds with your Rust toolchain)
 sudo ./qemu/bridge-down.sh sender   # tear down when done
 ```
+
+### Covert-channel analysis
+
+`lab/orchestrator.py` runs a whole experiment end to end, capture SYNs on the
+host, drive the VM to `notch inject`, then analyze the captured traffic
+
+```sh
+cd lab
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python orchestrator.py --mode no-auth        # capture → inject → analyze
+.venv/bin/python -m isn.analyze captures/some.pcap     # analyze an existing capture
+```
+
+![lab](assets/isn.png)
 
 ## Formatting & linting
 
