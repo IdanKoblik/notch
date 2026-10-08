@@ -1,39 +1,50 @@
 # Notch
 
-> **For learning purposes.** This project demonstrates network steganography and
-> can be used as an offensive tool. Use it only on systems and networks you are
-> authorized to test. You are responsible for how you use it and for complying
-> with applicable laws; use it at your own risk.
+Notch is a network steganography tool. It hides arbitrary
+payloads inside ordinary-looking traffic, with optional authentication so only a
+holder of the shared secret can recover the data.
 
-Work-in-progress network steganography tool. Prebuilt downloads,
-when available, are published on [GitHub Releases](https://github.com/IdanKoblik/notch/releases).
+Prebuilt binaries, when available, are published on
+[GitHub Releases](https://github.com/IdanKoblik/notch/releases).
 
-## Injection Methods
+> **Intended for learning and authorized testing only.** Notch demonstrates
+> network steganography and can be used offensively. Use it only on systems and
+> networks you own or are explicitly authorized to test. You are responsible for
+> complying with all applicable laws; use it at your own risk.
 
-| Method                | Status      | Details                                                                       |
-| --------------------- | ----------- | ----------------------------------------------------------------------------- |
-| TCP SYN ISN injection | Available   | Encodes payload data in the Initial Sequence Number (ISN) of TCP SYN packets. |
-| ICMP                  | TODO        | Planned transport method.                                                     |
+## Injection methods
 
-> Authenticated injection - Uses `SECRET` to authenticate encoded data.  
->
+| Method                | Status    | Details                                                                       |
+| --------------------- | --------- | ----------------------------------------------------------------------------- |
+| TCP SYN ISN injection | Available | Encodes payload data in the Initial Sequence Number (ISN) of TCP SYN packets. |
+| ICMP                  | Planned   | Planned transport method.                                                      |
 
-## Build
+Authenticated mode uses a `SECRET` (via HMAC) so that encoded data can be
+verified by the receiver and is not trivially recoverable by an observer.
 
-Prefer not to build from source? Grab a prebuilt binary for your platform from
-the [GitHub Releases](https://github.com/IdanKoblik/notch/releases) page, make
-it executable (`chmod +x notch`), and skip the rest of this section.
+## Installation
 
-Otherwise, install Rust and build with Cargo:
+The quickest option is to download a prebuilt binary for your platform from the
+[Releases](https://github.com/IdanKoblik/notch/releases) page and make it
+executable:
+
+```sh
+chmod +x notch
+```
+
+To build from source instead, install a recent stable Rust toolchain (via
+[rustup](https://rustup.rs/)) and compile with Cargo:
 
 ```sh
 cargo build --release
 ```
 
-## Inject a payload
+The resulting binary is at `target/release/notch`.
+
+## Usage
 
 The payload is read from standard input by default. Each authenticated packet
-encodes two payload bytes; use `--no-auth` to encode four bytes per packet.
+encodes two payload bytes; `--no-auth` encodes four bytes per packet.
 Authenticated mode requires the `SECRET` environment variable.
 
 ```sh
@@ -41,61 +52,78 @@ printf '\x12\x34' | sudo -E target/release/notch inject \
   --dest 192.0.2.10 --interface eth0
 ```
 
-To read payload bytes from a file instead, pass its path with `--payload`:
+To read the payload from a file instead, pass its path with `--payload`:
 
 ```sh
 sudo -E SECRET='shared secret' target/release/notch inject \
   --dest 192.0.2.10 --interface eth0 --payload payload.bin --rate 10
 ```
 
-The sender displays the injection details and asks for confirmation before
-sending. Raw TCP packet transmission requires `CAP_NET_RAW` (often provided by
-running with `sudo`).
+The sender prints the injection details and asks for confirmation before
+sending. Raw TCP transmission requires `CAP_NET_RAW`, which running under `sudo`
+typically provides. Run `notch inject --help` for the full list of options.
 
-Run `notch inject --help` for all options. This project is in active development;
-there is no receiver command yet.
+Notch is under active development and does not yet include a receiver command.
 
 [![Usage](assets/usage.png)](https://www.youtube.com/watch?v=Sb-RUjxPXJo)
 
 ## QEMU lab
 
 The `lab/` directory is a [Buildroot](https://buildroot.org/) `BR2_EXTERNAL`
-tree that boots `notch` inside QEMU VMs on an isolated L2 network. Three scripts
-in `lab/qemu/` drive it:
+tree that boots Notch inside QEMU virtual machines on an isolated layer-2
+network, so the covert channel can be exercised and analyzed safely. Three
+scripts in `lab/qemu/` drive it:
 
-| Script            | Run as | Purpose                                                                                   |
-| ----------------- | ------ | ----------------------------------------------------------------------------------------- |
-| `bridge-up.sh`    | root   | Create the isolated bridge `br-notch` and per-node tap(s), owned by your user.            |
-| `run.sh`          | you    | Build `notch`, bake it into the role's rootfs via Buildroot, and boot it under QEMU.      |
-| `bridge-down.sh`  | root   | Remove the tap(s) and the bridge once empty.                                              |
+| Script           | Run as | Purpose                                                                          |
+| ---------------- | ------ | -------------------------------------------------------------------------------- |
+| `bridge-up.sh`   | root   | Create the isolated bridge `br-notch` and per-node tap device(s), owned by you.  |
+| `run.sh`         | you    | Build Notch, bake it into the role's rootfs via Buildroot, and boot it in QEMU.  |
+| `bridge-down.sh` | root   | Remove the tap device(s) and the bridge once empty.                              |
 
-Typical session (from `lab/`):
+A typical session, from `lab/`:
 
 ```sh
 sudo ./qemu/bridge-up.sh sender     # once per boot session; creates tap-sender
-./qemu/run.sh sender                # as your user — do NOT sudo (it builds with your Rust toolchain)
+./qemu/run.sh sender                # as your user; do not sudo (it builds with your Rust toolchain)
 sudo ./qemu/bridge-down.sh sender   # tear down when done
 ```
 
 ### Covert-channel analysis
 
-`lab/orchestrator.py` runs a whole experiment end to end, capture SYNs on the
-host, drive the VM to `notch inject`, then analyze the captured traffic
+`lab/orchestrator.py` runs a full experiment end to end: it captures SYNs on the
+host, drives the VM to run `notch inject`, and then analyzes the captured
+traffic. The `lab/isn/` package performs the steganalysis, testing whether the
+TCP ISNs look random (a real OS) or carry a hidden payload, and writing a
+verdict plus a scorecard image to `lab/results/`.
 
 ```sh
 cd lab
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python orchestrator.py --mode no-auth        # capture → inject → analyze
-.venv/bin/python -m isn.analyze captures/some.pcap     # analyze an existing capture
+.venv/bin/python orchestrator.py --mode no-auth     # capture, inject, and analyze
+.venv/bin/python -m isn.analyze captures/some.pcap  # analyze an existing capture
 ```
 
 ![lab](assets/isn.png)
 
-## Formatting & linting
+## Contributing
 
-A repo pre-commit hook (`.githooks/pre-commit`) checks
-formatting before each commit — enable it with:
+Contributions, issues, and feature ideas are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full guide; in short:
 
-```bash
-git config core.hooksPath .githooks
-```
+- Build and test with `cargo build` and `cargo test`.
+- Run `cargo fmt` and `cargo clippy` before committing. A pre-commit hook under
+  `.githooks/` can do the formatting for you, enabled with:
+
+  ```sh
+  git config core.hooksPath .githooks
+  ```
+
+- Keep pull requests focused, match the existing style, and update tests for any
+  behavior you change.
+
+All participants are expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+Notch is licensed under the [GNU GPL-3.0](LICENSE).
