@@ -1,0 +1,19 @@
+BR2_x86_64=y
+BR2_PER_PACKAGE_DIRECTORIES=y
+BR2_TARGET_GENERIC_HOSTNAME="sender"
+BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_NOTCH_LAB_PATH)/board/sender/rootfs"
+
+# Linux kernel: bzImage built from the external tree's kernel config.
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_LATEST_VERSION=y
+BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_NOTCH_LAB_PATH)/board/sender/linux.config"
+BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y
+
+# Runtime libraries for the notch binary: libpcap.so.1 (pcap crate).
+BR2_PACKAGE_LIBPCAP=y
+
+# Root filesystem: ext2 image for QEMU virtio (root=/dev/vda), not tar.
+BR2_TARGET_ROOTFS_EXT2=y
+# BR2_TARGET_ROOTFS_TAR is not set
