@@ -1,0 +1,17 @@
+# --- Buildroot external tree layout note ---------------------------------
+# A BR2_EXTERNAL tree requires three files at its root, all of which must
+# exist even when empty:
+#   external.desc  name + description of the tree
+#   Config.in      Kconfig sourced into Buildroot's menu (packages)
+#   external.mk    makefile glued into Buildroot's build (packages)
+# configs/<role>_defconfig and board/<role>/ are then discovered automatically.
+# -------------------------------------------------------------------------
+
+# Generated image artifacts: treat as binary, keep out of diffs and GitHub
+# language statistics.
+images/**     binary linguist-generated
+*.ext2        binary
+bzImage       binary
+
+# Shell scripts stay LF-terminated regardless of the host's autocrlf setting.
+*.sh          text eol=lf

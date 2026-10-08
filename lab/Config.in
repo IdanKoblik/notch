@@ -1,0 +1,6 @@
+# Kconfig for the NOTCH_LAB Buildroot external tree.
+#
+# This tree ships only defconfigs (configs/) and rootfs overlays (board/),
+# no custom packages, so there are no menu entries to source here.
+# The file must exist for Buildroot to accept BR2_EXTERNAL; leave it empty
+# until a package/ dir is added, then `source` each package's Config.in below.
