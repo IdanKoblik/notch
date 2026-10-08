@@ -20,7 +20,11 @@ when available, are published on [GitHub Releases](https://github.com/IdanKoblik
 
 ## Build
 
-Install Rust, then build with Cargo:
+Prefer not to build from source? Grab a prebuilt binary for your platform from
+the [GitHub Releases](https://github.com/IdanKoblik/notch/releases) page, make
+it executable (`chmod +x notch`), and skip the rest of this section.
+
+Otherwise, install Rust and build with Cargo:
 
 ```sh
 cargo build --release
