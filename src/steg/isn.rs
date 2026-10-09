@@ -5,10 +5,9 @@ pub enum Command {
 
 impl Command {
     pub fn encode(&self) -> u16 {
-        let value = match self {
+        match self {
             Command::Ping { value } => *value,
-        };
-        value
+        }
     }
 
     #[allow(unused)]
