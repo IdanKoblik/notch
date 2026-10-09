@@ -16,6 +16,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Inject(cmd::inject::InjectCmd),
+    Extract(cmd::extract::ExtractCmd),
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,6 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Inject(cmd) => cmd.run()?,
+        Commands::Extract(cmd) => cmd.run()?,
     }
 
     Ok(())

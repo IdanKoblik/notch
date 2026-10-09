@@ -227,7 +227,12 @@ impl InjectCmd {
                 Flags::Start as u8
             } else {
                 Flags::None as u8
-            }) | if is_last { Flags::End as u8 } else { 0 };
+            }) | if is_last { Flags::End as u8 } else { 0 }
+                | if is_last && n < chunk_size {
+                    Flags::Partial as u8
+                } else {
+                    0
+                };
 
             let isn = if self.no_auth {
                 u32::from_be_bytes(current[..4].try_into().unwrap())
