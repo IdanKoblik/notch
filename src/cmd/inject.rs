@@ -63,6 +63,10 @@ pub enum CovertChannel {
 }
 
 #[derive(Args)]
+#[command(
+    about = "Inject a payload into network traffic using a covert channel.",
+    override_usage = "notch inject [OPTIONS] --dest <DEST> --interface <INTERFACE>"
+)]
 pub struct InjectCmd {
     #[arg(long)]
     dest: Ipv4Addr,
