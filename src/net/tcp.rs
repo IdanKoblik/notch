@@ -1,3 +1,7 @@
+use pnet::packet::Packet;
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket, ipv4_checksum};
 use pnet::transport::TransportSender;
 use std::net::{IpAddr, Ipv4Addr};
@@ -48,4 +52,64 @@ pub fn send_syn(
     tx.send_to(packet, IpAddr::V4(dest_ip))?;
 
     Ok(())
+}
+
+/// Returns the sequence number from a captured Ethernet/IPv4 TCP SYN packet.
+/// Non-IPv4, non-TCP, non-SYN, and malformed frames are ignored.
+pub fn extract_isn(data: &[u8]) -> Option<u32> {
+    let ethernet = EthernetPacket::new(data)?;
+    if ethernet.get_ethertype() != EtherTypes::Ipv4 {
+        return None;
+    }
+    let ipv4 = Ipv4Packet::new(ethernet.payload())?;
+    if ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
+        return None;
+    }
+    let tcp = TcpPacket::new(ipv4.payload())?;
+    if tcp.get_flags() & TcpFlags::SYN == 0 || tcp.get_flags() & TcpFlags::ACK != 0 {
+        return None;
+    }
+    Some(tcp.get_sequence())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ethernet_ipv4_tcp(flags: u8, sequence: u32) -> [u8; 54] {
+        let mut bytes = [0u8; 54];
+        bytes[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+        bytes[14] = 0x45;
+        bytes[16..18].copy_from_slice(&40u16.to_be_bytes());
+        bytes[23] = 6;
+        bytes[38..42].copy_from_slice(&sequence.to_be_bytes());
+        bytes[46] = 0x50;
+        bytes[47] = flags;
+        bytes
+    }
+
+    #[test]
+    fn extracts_sequence_from_tcp_syn() {
+        assert_eq!(
+            extract_isn(&ethernet_ipv4_tcp(TcpFlags::SYN, 0x1234_5678)),
+            Some(0x1234_5678)
+        );
+    }
+
+    #[test]
+    fn ignores_non_syn_and_syn_ack_packets() {
+        assert_eq!(extract_isn(&ethernet_ipv4_tcp(0x10, 7)), None);
+        assert_eq!(
+            extract_isn(&ethernet_ipv4_tcp(TcpFlags::SYN | TcpFlags::ACK, 7)),
+            None
+        );
+    }
+
+    #[test]
+    fn ignores_non_ipv4_and_malformed_frames() {
+        let mut packet = ethernet_ipv4_tcp(TcpFlags::SYN, 7);
+        packet[12..14].copy_from_slice(&0x86DDu16.to_be_bytes());
+        assert_eq!(extract_isn(&packet), None);
+        assert_eq!(extract_isn(&[0; 3]), None);
+    }
 }

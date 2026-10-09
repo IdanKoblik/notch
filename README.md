@@ -63,7 +63,19 @@ The sender prints the injection details and asks for confirmation before
 sending. Raw TCP transmission requires `CAP_NET_RAW`, which running under `sudo`
 typically provides. Run `notch inject --help` for the full list of options.
 
-Notch is under active development and does not yet include a receiver command.
+To recover a payload live, start `extract` on the receiving interface before
+running the sender. The receiver requires the same shared secret and writes
+recovered bytes to standard output; it stops when it receives the final packet.
+
+```sh
+sudo target/release/notch extract --interface eth0 --port 6769 --secret 'shared secret' > payload.bin
+```
+
+To extract from an existing capture, pass `--pcap` instead of `--interface`:
+
+```sh
+target/release/notch extract --pcap capture.pcap --port 6769 --secret 'shared secret' > payload.bin
+```
 
 [![Usage](assets/usage.png)](https://www.youtube.com/watch?v=Sb-RUjxPXJo)
 
