@@ -1,7 +1,6 @@
 import logging
 
 def setup_logging(level: int = logging.INFO) -> None:
-    """Consistent, readable logging for the orchestrator and analyzer."""
     logging.basicConfig(
         level=level,
         format="%(asctime)s | %(levelname)-5s | %(name)-12s | %(message)s",

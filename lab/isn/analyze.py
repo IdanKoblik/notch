@@ -14,7 +14,6 @@ PRINTABLE_MAX = 0.60    # above this, too many bytes are typeable ASCII
 
 
 def read_isns(pcap: str) -> list[int]:
-    """Pull the sequence number (ISN) out of every SYN (SYN set, ACK clear)."""
     from scapy.all import TCP, rdpcap  # imported here so metrics stays pcap-free
 
     isns: list[int] = []
