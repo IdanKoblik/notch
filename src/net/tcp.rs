@@ -90,19 +90,13 @@ mod tests {
 
     #[test]
     fn extracts_sequence_from_tcp_syn() {
-        assert_eq!(
-            extract_isn(&ethernet_ipv4_tcp(TcpFlags::SYN, 0x1234_5678)),
-            Some(0x1234_5678)
-        );
+        assert_eq!(extract_isn(&ethernet_ipv4_tcp(TcpFlags::SYN, 0x1234_5678)), Some(0x1234_5678));
     }
 
     #[test]
     fn ignores_non_syn_and_syn_ack_packets() {
         assert_eq!(extract_isn(&ethernet_ipv4_tcp(0x10, 7)), None);
-        assert_eq!(
-            extract_isn(&ethernet_ipv4_tcp(TcpFlags::SYN | TcpFlags::ACK, 7)),
-            None
-        );
+        assert_eq!(extract_isn(&ethernet_ipv4_tcp(TcpFlags::SYN | TcpFlags::ACK, 7)), None);
     }
 
     #[test]

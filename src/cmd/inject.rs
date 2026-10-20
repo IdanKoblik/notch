@@ -7,7 +7,7 @@ use crate::net::pcap_capture::PcapCapture;
 use crate::net::tcp::{self, construct_tcp_syn, send_syn};
 use crate::steg::isn::{Command, Flags, IsnPacket};
 use clap::{Args, ValueEnum};
-use hmac::{Hmac, KeyInit, Mac};
+use hmac::{Hmac, KeyInit};
 use pnet::datalink::NetworkInterface;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::transport::{TransportChannelType, TransportProtocol, transport_channel};
@@ -22,25 +22,25 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("missing auth secret")]
-    MissingSecret,
-
     #[error("source ip is missing")]
     MissingSourceIp,
 
     #[error("raw transport sockets require CAP_NET_RAW")]
     PermissionDenied,
 
-    #[error("invalid HMAC secret length")]
-    InvalidSecretLength,
-
     #[error("packet rate must be a finite, nonnegative value")]
     InvalidPacketRate,
+
+    #[error("authenticated packet sequence space is exhausted")]
+    SequenceSpaceExhausted,
+
+    #[error("Auth error {0}")]
+    Auth(#[from] crate::crypto::auth::Error),
 
     #[error("failed to construct TCP packet: {0}")]
     Tcp(#[from] tcp::Error),
 
-    #[error("CLI error")]
+    #[error("CLI error {0}")]
     Cli(#[from] crate::cli::Error),
 
     #[error("Pcap error {0}")]
@@ -102,9 +102,10 @@ pub struct InjectCmd {
 
     #[arg(long, value_enum, default_value_t = CovertChannel::SynIsn)]
     channel: CovertChannel,
-}
 
-type HmacSha256 = Hmac<Sha256>;
+    #[arg(long = "confirm", default_value_t = false, help = "Automatically confirm injection.")]
+    is_confirmed: bool,
+}
 
 impl InjectCmd {
     fn print_details(&self, source: Ipv4Addr) {
@@ -112,17 +113,10 @@ impl InjectCmd {
         eprintln!("  source: {} ({})", source, self.interface.name);
         eprintln!("  destination: {}:{}", self.dest, self.dest_port);
         eprintln!("  source port: {}", self.source_port);
-        eprintln!(
-            "  authentication: {}",
-            if self.no_auth { "disabled" } else { "enabled" }
-        );
+        eprintln!("  authentication: {}", if self.no_auth { "disabled" } else { "enabled" });
         eprintln!(
             "  payload: {}",
-            if self.payload.is_empty() {
-                "standard input"
-            } else {
-                self.payload.as_str()
-            }
+            if self.payload.is_empty() { "standard input" } else { self.payload.as_str() }
         );
     }
 
@@ -131,18 +125,14 @@ impl InjectCmd {
             return Err(Error::InvalidPacketRate);
         }
 
-        let (mac, secret) = if self.no_auth {
-            (None, None)
+        let auth = if self.no_auth {
+            None
         } else {
-            let raw_secret = env::var("SECRET").map_err(|_| Error::MissingSecret)?;
-            let secret: [u8; 32] = Sha256::digest(raw_secret.as_bytes()).into();
-            let mac =
-                HmacSha256::new_from_slice(&secret).map_err(|_| Error::InvalidSecretLength)?;
-            (Some(mac), Some(secret))
+            let auth = Auth::new()?;
+            Some(auth)
         };
 
         let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
-
         self.print_details(source);
 
         let chunk_size = if self.no_auth { 4 } else { 2 };
@@ -171,7 +161,7 @@ impl InjectCmd {
             eprintln!("WARNING: this injection is unpaced and may create high network noise.");
         }
 
-        if !confirm()? {
+        if !self.is_confirmed && !confirm()? {
             eprintln!("injection cancelled");
             return Ok(());
         }
@@ -201,7 +191,7 @@ impl InjectCmd {
             Box::new(File::open(&self.payload)?)
         };
 
-        let mut index: u8 = 0;
+        let mut index: u32 = 0;
         let mut first = true;
         let mut packets_sent: u64 = 0;
         let packet_period = if self.rate > 0.0 {
@@ -221,31 +211,25 @@ impl InjectCmd {
             if n == 0 {
                 break;
             }
+            if !self.no_auth && index == u32::MAX {
+                return Err(Error::SequenceSpaceExhausted);
+            }
 
             let is_last = n < chunk_size;
-            let flags = (if first {
-                Flags::Start as u8
-            } else {
-                Flags::None as u8
-            }) | if is_last { Flags::End as u8 } else { 0 }
-                | if is_last && n < chunk_size {
-                    Flags::Partial as u8
-                } else {
-                    0
-                };
+            let flags = (if first { Flags::Start as u8 } else { Flags::None as u8 })
+                | if is_last { Flags::End as u8 } else { 0 }
+                | if is_last && n < chunk_size { Flags::Partial as u8 } else { 0 };
 
             let isn = if self.no_auth {
-                u32::from_be_bytes(current[..4].try_into().unwrap())
+                u32::from_be_bytes(current[..].try_into().unwrap())
             } else {
-                let raw = u16::from_be_bytes(current[..2].try_into().unwrap());
+                let raw = u16::from_be_bytes(current[..].try_into().unwrap());
 
-                let mut m = mac.as_ref().unwrap().clone();
-                m.update(&[index]);
-
-                let auth_tag = m.finalize().into_bytes()[index as usize];
+                let auth_tag =
+                    crate::steg::isn::packet_tag(mac.as_ref().unwrap(), index, flags, raw);
 
                 let cmd = Command::Ping { value: raw };
-                let packet = IsnPacket::new(auth_tag, flags, index, cmd);
+                let packet = IsnPacket::new(auth_tag, flags, index as u8, cmd);
 
                 index = index.wrapping_add(1);
 
@@ -259,10 +243,7 @@ impl InjectCmd {
                 eprintln!("isn: 0x{isn:08x}");
                 eprintln!(
                     "tcp: {}",
-                    tcp.iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<Vec<_>>()
-                        .join(" ")
+                    tcp.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
                 );
             }
 

@@ -25,10 +25,7 @@ enum Commands {
 
 fn harden_process() {
     unsafe {
-        let no_core = rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
+        let no_core = rlimit { rlim_cur: 0, rlim_max: 0 };
 
         if libc::setrlimit(RLIMIT_CORE, &no_core) != 0 {
             eprintln!("Could not disable core dumps");

@@ -62,10 +62,7 @@ mod tests {
 
     #[test]
     fn find_ipv4_skips_ipv6_and_finds_ipv4() {
-        let iface = make_interface(
-            "eth0",
-            vec![v6(Ipv6Addr::LOCALHOST, 128), v4(10, 0, 0, 5, 8)],
-        );
+        let iface = make_interface("eth0", vec![v6(Ipv6Addr::LOCALHOST, 128), v4(10, 0, 0, 5, 8)]);
         assert_eq!(find_ipv4(&iface), Some(Ipv4Addr::new(10, 0, 0, 5)));
     }
 
@@ -73,11 +70,7 @@ mod tests {
     fn find_ipv4_returns_first_when_multiple_ipv4() {
         let iface = make_interface(
             "eth0",
-            vec![
-                v4(10, 0, 0, 1, 8),
-                v4(172, 16, 0, 1, 12),
-                v4(192, 168, 0, 1, 24),
-            ],
+            vec![v4(10, 0, 0, 1, 8), v4(172, 16, 0, 1, 12), v4(192, 168, 0, 1, 24)],
         );
         assert_eq!(find_ipv4(&iface), Some(Ipv4Addr::new(10, 0, 0, 1)));
     }

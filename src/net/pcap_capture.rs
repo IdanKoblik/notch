@@ -29,10 +29,7 @@ impl PcapCapture {
             .recv()
             .map_err(|_| pcap::Error::PcapError("capture worker failed to start".into()))?;
 
-        Ok(Self {
-            stop,
-            worker: Some(worker),
-        })
+        Ok(Self { stop, worker: Some(worker) })
     }
 
     pub fn finish(mut self) -> Result<(), pcap::Error> {

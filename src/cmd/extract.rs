@@ -1,10 +1,11 @@
 use crate::crypto::num::decrypt_u32;
+use crate::net::capture::CaptureSource;
 use crate::net::ip::parse_interface;
 use crate::net::tcp::extract_isn;
 use crate::steg::isn::{Command, Flags, IsnPacket};
 use clap::Args;
-use hmac::{Hmac, KeyInit, Mac};
-use pcap::{Active, Capture, Offline};
+use hmac::{Hmac, KeyInit};
+use pcap::Capture;
 use pnet::datalink::NetworkInterface;
 use sha2::{Digest, Sha256};
 use std::io::{self, Write};
@@ -66,6 +67,7 @@ impl ExtractCmd {
                 Capture::from_device(interface.name.as_str())?
                     .promisc(true)
                     .snaplen(65535)
+                    .timeout(1000)
                     .open()?,
             )
         } else {
@@ -77,18 +79,22 @@ impl ExtractCmd {
             eprintln!("using capture filter: {filter}");
         }
 
-        let mut expected_index = 0u8;
+        let mac = HmacSha256::new_from_slice(&key).expect("SHA-256 key is valid");
+        let mut expected_index = 0u32;
         let mut started = false;
         let mut stdout = io::stdout().lock();
         loop {
             let Some(packet) = capture.next_packet()? else {
+                if capture.is_live() {
+                    continue;
+                }
                 return Err(Error::MissingEndMarker);
             };
             let Some(isn) = extract_isn(&packet) else {
                 continue;
             };
             let decoded = IsnPacket::decode(decrypt_u32(isn, &key));
-            if decoded.index != (expected_index & 0x0f) {
+            if u32::from(decoded.index) != (expected_index & 0x0f) {
                 if self.verbose {
                     eprintln!(
                         "ignoring SYN with unexpected packet index {} (expected {})",
@@ -98,14 +104,12 @@ impl ExtractCmd {
                 }
                 continue;
             }
-
-            let mut mac = HmacSha256::new_from_slice(&key).expect("SHA-256 key is valid");
-            mac.update(&[expected_index]);
-            if mac.finalize().into_bytes()[expected_index as usize] != decoded.auth_tag {
+            if crate::steg::isn::packet_tag(&mac, expected_index, decoded.flags, decoded.cmd)
+                != decoded.auth_tag
+            {
                 if self.verbose {
                     eprintln!(
-                        "ignoring SYN with invalid authentication tag at packet {}",
-                        expected_index
+                        "ignoring SYN with invalid authentication tag at packet {expected_index}"
                     );
                 }
                 continue;
@@ -126,20 +130,7 @@ impl ExtractCmd {
                 stdout.write_all(&bytes)?;
             }
             if self.verbose {
-                eprintln!(
-                    "extracted packet {} ({} byte{})",
-                    expected_index,
-                    if decoded.flags & Flags::Partial as u8 != 0 {
-                        1
-                    } else {
-                        2
-                    },
-                    if decoded.flags & Flags::Partial as u8 != 0 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                );
+                eprintln!("extracted packet {expected_index}");
             }
             expected_index = expected_index.wrapping_add(1);
             if decoded.flags & Flags::End as u8 != 0 {
@@ -149,33 +140,6 @@ impl ExtractCmd {
                 }
                 return Ok(());
             }
-        }
-    }
-}
-
-enum CaptureSource {
-    Live(Capture<Active>),
-    File(Capture<Offline>),
-}
-
-impl CaptureSource {
-    fn filter(&mut self, filter: &str, optimize: bool) -> Result<(), pcap::Error> {
-        match self {
-            Self::Live(capture) => capture.filter(filter, optimize),
-            Self::File(capture) => capture.filter(filter, optimize),
-        }
-    }
-
-    fn next_packet(&mut self) -> Result<Option<Vec<u8>>, pcap::Error> {
-        match self {
-            Self::Live(capture) => capture
-                .next_packet()
-                .map(|packet| Some(packet.data.to_vec())),
-            Self::File(capture) => match capture.next_packet() {
-                Ok(packet) => Ok(Some(packet.data.to_vec())),
-                Err(pcap::Error::NoMorePackets) => Ok(None),
-                Err(error) => Err(error),
-            },
         }
     }
 }

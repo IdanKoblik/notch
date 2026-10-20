@@ -1,7 +1,6 @@
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::Sha256;
+use hmac::{KeyInit, Mac};
 
-type HmacSha256 = Hmac<Sha256>;
+use crate::crypto::HmacSha256;
 
 pub fn encrypt_u32(value: u32, key: &[u8; 32]) -> u32 {
     let mut left = (value >> 16) as u16;
