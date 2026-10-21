@@ -33,13 +33,13 @@ fn harden_process() {
         let no_core = rlimit { rlim_cur: 0, rlim_max: 0 };
 
         if libc::setrlimit(RLIMIT_CORE, &no_core) != 0 {
-            eprintln!("Could not disable core dumps");
+            error!("Could not disable core dumps");
         }
 
         #[cfg(target_os = "linux")]
         {
             if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
-                eprintln!("Could not clear the dumpable flag");
+                error!("Could not clear the dumpable flag");
             }
         }
     }
@@ -48,7 +48,12 @@ fn harden_process() {
 fn init_logging(verbose: bool) {
     let level = if verbose { "debug" } else { "info" };
 
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::new(level)).init();
+    fmt()
+        .without_time()
+        .with_target(false)
+        .with_writer(crate::cli::progress::ProgressLogWriter::new)
+        .with_env_filter(EnvFilter::new(level))
+        .init();
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -63,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging(cli.verbose);
 
     if cli.dev {
-        println!("WARNING: YOU ARE RUNNING IN DEV MODE!!!");
+        warn!("YOU ARE RUNNING IN DEV MODE!!!");
     } else {
         harden_process();
     }

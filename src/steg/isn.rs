@@ -10,7 +10,7 @@ use pnet::transport::{
     TransportChannelType, TransportProtocol, TransportReceiver, TransportSender, transport_channel,
 };
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use super::Carrier;
 use crate::crypto::HmacSha256;
@@ -39,6 +39,12 @@ pub enum Error {
     #[error("raw transport sockets require CAP_NET_RAW")]
     PermissionDenied,
 
+    #[error("source address is not set")]
+    MissingSource,
+
+    #[error("destination address is not set")]
+    MissingDest,
+
     #[error("failed to construct TCP packet: {0}")]
     Tcp(#[from] tcp::Error),
 
@@ -58,21 +64,22 @@ pub fn packet_tag(mac: &HmacSha256, index: u32, flags: u8, value: u16) -> u8 {
 }
 
 pub struct IsnCarrier<'a> {
-    pub interface: NetworkInterface,
-    pub source: Ipv4Addr,
-    pub dest: Ipv4Addr,
+    pub source: Option<Ipv4Addr>,
+    pub dest: Option<Ipv4Addr>,
     pub dest_port: u16,
     pub source_port: u16,
 
     pub tx: TransportSender,
-    pub rx: TransportReceiver,
-
+    // pub rx: TransportReceiver,
     pub auth: Option<&'a Auth>,
     index: u32,
 }
 
 impl<'a> Carrier<'a> for IsnCarrier<'a> {
     fn send(&mut self, data: &[u8], flags: u8) -> Result<(), Box<dyn StdError>> {
+        let source = self.source.ok_or(Error::MissingSource)?;
+        let dest = self.dest.ok_or(Error::MissingDest)?;
+
         let isn = match self.auth {
             None => {
                 let bytes: [u8; 4] = data.try_into().map_err(|_| Error::InvalidChunkSize)?;
@@ -91,8 +98,8 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
             }
         };
 
-        let tcp = construct_tcp_syn(self.source, self.dest, self.source_port, self.dest_port, isn)?;
-        send_syn(&mut self.tx, &tcp, self.dest)?;
+        let tcp = construct_tcp_syn(source, dest, self.source_port, self.dest_port, isn)?;
+        send_syn(&mut self.tx, &tcp, dest)?;
         if self.auth.is_some() {
             self.index += 1;
         }
@@ -103,7 +110,9 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
 
     fn extract(&mut self, capture: &mut CaptureSource) -> Result<(), Box<dyn StdError>> {
         let auth = self.auth.ok_or(Error::MissingAuth)?;
-        let filter = format!("tcp dst port {}", self.dest_port);
+        let filter =
+            format!("tcp dst port {} and tcp src port {}", self.dest_port, self.source_port);
+        info!("using capture filter: {filter}");
         capture.filter(&filter, true)?;
 
         let mut expected_index = 0u32;
@@ -121,10 +130,17 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
             };
             let decoded = IsnFrame::decode(decrypt_u32(isn, &auth.secret));
             if u32::from(decoded.index) != (expected_index & 0x0f) {
+                warn!(
+                    "ignoring SYN with unexpected packet index {} (expected {})",
+                    decoded.index,
+                    expected_index & 0x0f
+                );
                 continue;
             }
+
             if packet_tag(&auth.mac, expected_index, decoded.flags, decoded.cmd) != decoded.auth_tag
             {
+                warn!("ignoring SYN with invalid authentication tag at packet {expected_index}");
                 continue;
             }
 
@@ -157,16 +173,15 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
 
 impl<'a> IsnCarrier<'a> {
     pub fn new(
-        interface: NetworkInterface,
-        source: Ipv4Addr,
-        dest: Ipv4Addr,
+        source: Option<Ipv4Addr>,
+        dest: Option<Ipv4Addr>,
         dest_port: u16,
         source_port: u16,
         auth: Option<&'a Auth>,
     ) -> Result<Self, Error> {
         let protocol =
             TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
-        let (tx, rx) = transport_channel(4096, protocol).map_err(|error| {
+        let (tx, _) = transport_channel(4096, protocol).map_err(|error| {
             if error.kind() == ErrorKind::PermissionDenied {
                 Error::PermissionDenied
             } else {
@@ -174,7 +189,7 @@ impl<'a> IsnCarrier<'a> {
             }
         })?;
 
-        Ok(Self { interface, source, dest, dest_port, source_port, tx, rx, auth, index: 0 })
+        Ok(Self { source, dest, dest_port, source_port, tx, auth, index: 0 })
     }
 }
 

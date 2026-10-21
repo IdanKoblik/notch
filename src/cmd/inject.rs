@@ -2,18 +2,14 @@ use crate::cli::ask::confirm;
 use crate::cli::progress::make_progress;
 use crate::cmd::inject::OutputFormat::Pcap;
 use crate::crypto::auth::Auth;
-use crate::crypto::num::encrypt_u32;
 use crate::net::ip::{find_ipv4, parse_interface};
 use crate::net::pcap_capture::PcapCapture;
-use crate::net::tcp::{self, construct_tcp_syn, send_syn};
+use crate::net::tcp;
 use crate::steg::isn_frame::Flags;
-use crate::steg::{Carrier, CovertChannel, create_carrier};
+use crate::steg::{CovertChannel, create_carrier};
 use clap::{Args, ValueEnum};
 use hmac::KeyInit;
 use pnet::datalink::NetworkInterface;
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::transport::{TransportChannelType, TransportProtocol, transport_channel};
-use sha2::Digest;
 use std::fs::File;
 use std::io;
 use std::io::ErrorKind;
@@ -21,14 +17,12 @@ use std::io::prelude::Read;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+use tracing::{error, info, warn};
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("source ip is missing")]
     MissingSourceIp,
-
-    #[error("raw transport sockets require CAP_NET_RAW")]
-    PermissionDenied,
 
     #[error("packet rate must be a finite, nonnegative value")]
     InvalidPacketRate,
@@ -99,14 +93,14 @@ pub struct InjectCmd {
 
 impl InjectCmd {
     fn print_details(&self, source: Ipv4Addr) {
-        eprintln!("Injection details:");
-        eprintln!("  source: {} ({})", source, self.interface.name);
-        eprintln!("  destination: {}:{}", self.dest, self.dest_port);
-        eprintln!("  source port: {}", self.source_port);
-        eprintln!("  authentication: {}", if self.no_auth { "disabled" } else { "enabled" });
+        eprintln!(" Injection details:");
+        eprintln!("   source={source} interface={}", self.interface.name);
+        eprintln!("   destination={} destination_port={}", self.dest, self.dest_port);
+        eprintln!("   source_port={}", self.source_port);
+        eprintln!("   authentication={}", if self.no_auth { "disabled" } else { "enabled" });
         eprintln!(
-            "  payload: {}",
-            if self.payload.is_empty() { "standard input" } else { self.payload.as_str() }
+            "   payload={}",
+            if self.payload.is_empty() { "standard input" } else { &self.payload }
         );
     }
 
@@ -127,9 +121,8 @@ impl InjectCmd {
 
         let mut carrier = create_carrier(
             self.channel,
-            self.interface.clone(),
-            source,
-            self.dest,
+            Some(source),
+            Some(self.dest),
             self.dest_port,
             self.source_port,
             auth.as_ref(),
@@ -142,33 +135,33 @@ impl InjectCmd {
             Some(std::fs::metadata(&self.payload)?.len())
         };
         if self.payload.is_empty() {
-            eprintln!("  packets: unknown (payload is read from standard input)");
+            info!("packets: unknown (payload is read from standard input)");
         } else {
             let bytes = total_bytes.unwrap();
-            eprintln!(
-                "  packets: {} commands ({} payload bytes / {} bytes per packet)",
+            info!(
+                "packets: {} packets ({} payload bytes / {} bytes per packet)",
                 bytes.div_ceil(chunk_size as u64),
                 bytes,
                 chunk_size
             );
             if bytes % chunk_size as u64 != 0 {
-                eprintln!("  note: the final command will be zero-padded to {chunk_size} bytes");
+                info!("the final packet will be zero-padded to {chunk_size} bytes");
             }
         }
 
         if self.rate == 0.0 {
-            eprintln!("  packet pacing: none (maximum send rate; potentially high network noise)");
-            eprintln!("WARNING: this injection is unpaced and may create high network noise.");
+            warn!("packet pacing: none (maximum send rate; potentially high network noise)");
+            warn!("this injection is unpaced and may create high network noise");
         }
 
         if !self.confirmed && !confirm()? {
-            eprintln!("injection cancelled");
+            error!("injection cancelled");
             return Ok(());
         }
 
         let mut pcap_output = if self.output_format == Pcap {
             let path = "inject.pcap";
-            eprintln!("writing injected packets to {path}");
+            info!("writing injected packets to {path}");
             let filter = format!(
                 "tcp and src host {source} and dst host {} and src port {} and dst port {}",
                 self.dest, self.source_port, self.dest_port
@@ -196,15 +189,14 @@ impl InjectCmd {
         };
         let mut next_packet = Instant::now();
         let progress = make_progress(total_bytes);
+        let _progress_log_guard = crate::cli::progress::route_logs_to(&progress);
 
-        loop {
-            let mut current = vec![0u8; chunk_size];
-            let n = read_buffer(&mut src, &mut current)?;
-            if n == 0 {
-                break;
-            }
-
-            let is_last = n < chunk_size;
+        let mut current = vec![0u8; chunk_size];
+        let mut n = read_buffer(&mut src, &mut current)?;
+        while n > 0 {
+            let mut next = vec![0u8; chunk_size];
+            let next_n = if n == chunk_size { read_buffer(&mut src, &mut next)? } else { 0 };
+            let is_last = n < chunk_size || next_n == 0;
             let flags = (if first { Flags::Start as u8 } else { Flags::None as u8 })
                 | if is_last { Flags::End as u8 } else { 0 }
                 | if is_last && n < chunk_size { Flags::Partial as u8 } else { 0 };
@@ -227,16 +219,15 @@ impl InjectCmd {
             }
 
             first = false;
-            if is_last {
-                break;
-            }
+            current = next;
+            n = next_n;
         }
 
         if let Some(output) = pcap_output.take() {
             output.finish()?;
         }
         progress.finish_and_clear();
-        eprintln!("sent {packets_sent} packets");
+        info!("injection complete: {packets_sent} packets sent");
         Ok(())
     }
 }

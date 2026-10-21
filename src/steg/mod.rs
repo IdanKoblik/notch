@@ -1,5 +1,4 @@
 use clap::ValueEnum;
-use pnet::datalink::NetworkInterface;
 use std::error::Error as StdError;
 use std::net::Ipv4Addr;
 
@@ -25,36 +24,15 @@ pub trait Carrier<'a> {
 
 pub fn create_carrier<'a>(
     channel: CovertChannel,
-    interface: NetworkInterface,
-    source: Ipv4Addr,
-    dest: Ipv4Addr,
+    source: Option<Ipv4Addr>,
+    dest: Option<Ipv4Addr>,
     dest_port: u16,
     source_port: u16,
     auth: Option<&'a Auth>,
 ) -> Result<Box<dyn Carrier<'a> + 'a>, Box<dyn StdError>> {
     match channel {
         CovertChannel::SynIsn => {
-            Ok(Box::new(IsnCarrier::new(interface, source, dest, dest_port, source_port, auth)?))
+            Ok(Box::new(IsnCarrier::new(source, dest, dest_port, source_port, auth)?))
         }
     }
 }
-
-//pub fn create_carrier<'a>() -> Result<Box<dyn Carrier<'a> + 'a>, Box<dyn StdError>> {
-//}
-
-// fn send<'a, C: Carrier<'a>>(
-//     carrier: &mut C,
-//     data: &[u8],
-//     flags: u8,
-// ) -> Result<(), Box<dyn StdError>> {
-//     carrier.send(data, flags)?;
-//     Ok(())
-// }
-//
-// fn extract<'a, C: Carrier<'a>>(
-//     carrier: &mut C,
-//     capture: &mut CaptureSource,
-// ) -> Result<(), Box<dyn StdError>> {
-//     carrier.extract(capture)?;
-//     Ok(())
-// }

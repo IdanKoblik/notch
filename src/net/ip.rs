@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 
 use pnet::datalink::{self};
 use pnet::ipnetwork;
+use tracing::debug;
 
 pub fn parse_interface(s: &str) -> Result<datalink::NetworkInterface, String> {
     pnet::datalink::interfaces()
@@ -97,7 +98,7 @@ mod tests {
     #[test]
     fn parse_interface_finds_existing_interface() {
         let Some(existing) = datalink::interfaces().into_iter().next() else {
-            eprintln!("no network interfaces on this host; skipping");
+            debug!("no network interfaces on this host; skipping");
             return;
         };
         let found = parse_interface(&existing.name).expect("interface should be found");

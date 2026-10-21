@@ -1,32 +1,25 @@
-use crate::crypto::num::decrypt_u32;
+use crate::crypto::auth::Auth;
 use crate::net::capture::CaptureSource;
 use crate::net::ip::parse_interface;
-use crate::net::tcp::extract_isn;
-use crate::steg::isn::{Command, Flags, IsnPacket};
+use crate::steg::{CovertChannel, create_carrier};
 use clap::Args;
-use hmac::{Hmac, KeyInit};
 use pcap::Capture;
 use pnet::datalink::NetworkInterface;
-use sha2::{Digest, Sha256};
-use std::io::{self, Write};
+use std::io;
 use std::path::PathBuf;
 use thiserror::Error;
-
-type HmacSha256 = Hmac<Sha256>;
+use tracing::info;
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("capture error: {0}")]
     Capture(#[from] pcap::Error),
 
-    #[error("invalid authenticated packet")]
-    InvalidPacket,
-
-    #[error("capture ended before a complete payload was found")]
-    MissingEndMarker,
-
     #[error("provide --pcap or --interface for live capture")]
     MissingCaptureSource,
+
+    #[error("Auth error {0}")]
+    Auth(#[from] crate::crypto::auth::Error),
 
     #[error("output error: {0}")]
     Io(#[from] io::Error),
@@ -41,28 +34,23 @@ pub struct ExtractCmd {
     #[arg(long, value_name = "FILE")]
     pcap: Option<PathBuf>,
 
-    #[arg(long, default_value_t = 6769)]
-    port: u16,
+    #[arg(long = "source-port", default_value_t = 6769)]
+    source_port: u16,
 
-    #[arg(long, required = true)]
-    secret: String,
+    #[arg(long = "port", default_value_t = 6769)]
+    dest_port: u16,
 
-    #[arg(short, long, default_value_t = false)]
-    verbose: bool,
+    #[arg(long, value_enum, default_value_t = CovertChannel::SynIsn)]
+    channel: CovertChannel,
 }
 
 impl ExtractCmd {
     pub fn run(&self) -> Result<(), Error> {
-        let key: [u8; 32] = Sha256::digest(self.secret.as_bytes()).into();
         let mut capture = if let Some(path) = &self.pcap {
-            if self.verbose {
-                eprintln!("reading packets from {}", path.display());
-            }
+            info!("reading packets from {}", path.display());
             CaptureSource::File(Capture::from_file(path)?)
         } else if let Some(interface) = &self.interface {
-            if self.verbose {
-                eprintln!("capturing authenticated SYN packets on {}", interface.name);
-            }
+            info!("capturing authenticated packets on {}", interface.name);
             CaptureSource::Live(
                 Capture::from_device(interface.name.as_str())?
                     .promisc(true)
@@ -73,73 +61,19 @@ impl ExtractCmd {
         } else {
             return Err(Error::MissingCaptureSource);
         };
-        let filter = format!("tcp dst port {}", self.port);
-        capture.filter(&filter, true)?;
-        if self.verbose {
-            eprintln!("using capture filter: {filter}");
-        }
 
-        let mac = HmacSha256::new_from_slice(&key).expect("SHA-256 key is valid");
-        let mut expected_index = 0u32;
-        let mut started = false;
-        let mut stdout = io::stdout().lock();
-        loop {
-            let Some(packet) = capture.next_packet()? else {
-                if capture.is_live() {
-                    continue;
-                }
-                return Err(Error::MissingEndMarker);
-            };
-            let Some(isn) = extract_isn(&packet) else {
-                continue;
-            };
-            let decoded = IsnPacket::decode(decrypt_u32(isn, &key));
-            if u32::from(decoded.index) != (expected_index & 0x0f) {
-                if self.verbose {
-                    eprintln!(
-                        "ignoring SYN with unexpected packet index {} (expected {})",
-                        decoded.index,
-                        expected_index & 0x0f
-                    );
-                }
-                continue;
-            }
-            if crate::steg::isn::packet_tag(&mac, expected_index, decoded.flags, decoded.cmd)
-                != decoded.auth_tag
-            {
-                if self.verbose {
-                    eprintln!(
-                        "ignoring SYN with invalid authentication tag at packet {expected_index}"
-                    );
-                }
-                continue;
-            }
+        let auth = Some(Auth::new()?);
+        let mut carrier = create_carrier(
+            self.channel,
+            None,
+            None,
+            self.dest_port,
+            self.source_port,
+            auth.as_ref(),
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
 
-            if !started {
-                if decoded.flags & Flags::Start as u8 == 0 {
-                    continue;
-                }
-                started = true;
-            }
-            let Command::Ping { value } =
-                Command::decode(decoded.cmd).ok_or(Error::InvalidPacket)?;
-            let bytes = value.to_be_bytes();
-            if decoded.flags & Flags::Partial as u8 != 0 {
-                stdout.write_all(&bytes[..1])?;
-            } else {
-                stdout.write_all(&bytes)?;
-            }
-            if self.verbose {
-                eprintln!("extracted packet {expected_index}");
-            }
-            expected_index = expected_index.wrapping_add(1);
-            if decoded.flags & Flags::End as u8 != 0 {
-                stdout.flush()?;
-                if self.verbose {
-                    eprintln!("received end marker");
-                }
-                return Ok(());
-            }
-        }
+        carrier.extract(&mut capture).map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(())
     }
 }
