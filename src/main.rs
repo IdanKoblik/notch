@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 use libc::{self, RLIMIT_CORE, rlimit};
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::{EnvFilter, fmt};
 
 mod cli;
 mod cmd;
@@ -14,7 +16,10 @@ struct Cli {
     command: Commands,
 
     #[arg(long = "dev", default_value_t = false)]
-    is_dev: bool,
+    dev: bool,
+
+    #[arg(long = "verbose", default_value_t = false)]
+    verbose: bool,
 }
 
 #[derive(Subcommand)]
@@ -40,6 +45,12 @@ fn harden_process() {
     }
 }
 
+fn init_logging(verbose: bool) {
+    let level = if verbose { "debug" } else { "info" };
+
+    tracing_subscriber::fmt().with_env_filter(EnvFilter::new(level)).init();
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -49,7 +60,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    if cli.is_dev {
+    init_logging(cli.verbose);
+
+    if cli.dev {
         println!("WARNING: YOU ARE RUNNING IN DEV MODE!!!");
     } else {
         harden_process();

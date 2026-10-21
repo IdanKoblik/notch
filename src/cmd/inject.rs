@@ -1,23 +1,25 @@
 use crate::cli::ask::confirm;
 use crate::cli::progress::make_progress;
 use crate::cmd::inject::OutputFormat::Pcap;
+use crate::crypto::auth::Auth;
 use crate::crypto::num::encrypt_u32;
 use crate::net::ip::{find_ipv4, parse_interface};
 use crate::net::pcap_capture::PcapCapture;
 use crate::net::tcp::{self, construct_tcp_syn, send_syn};
-use crate::steg::isn::{Command, Flags, IsnPacket};
+use crate::steg::isn_frame::Flags;
+use crate::steg::{Carrier, CovertChannel, create_carrier};
 use clap::{Args, ValueEnum};
-use hmac::{Hmac, KeyInit};
+use hmac::KeyInit;
 use pnet::datalink::NetworkInterface;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::transport::{TransportChannelType, TransportProtocol, transport_channel};
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::fs::File;
+use std::io;
 use std::io::ErrorKind;
 use std::io::prelude::Read;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
-use std::{env, io};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -30,9 +32,6 @@ pub enum Error {
 
     #[error("packet rate must be a finite, nonnegative value")]
     InvalidPacketRate,
-
-    #[error("authenticated packet sequence space is exhausted")]
-    SequenceSpaceExhausted,
 
     #[error("Auth error {0}")]
     Auth(#[from] crate::crypto::auth::Error),
@@ -54,12 +53,6 @@ pub enum Error {
 pub enum OutputFormat {
     None,
     Pcap,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum CovertChannel {
-    #[value(name = "syn-isn")]
-    SynIsn,
 }
 
 #[derive(Args)]
@@ -94,9 +87,6 @@ pub struct InjectCmd {
     #[arg(long, default_value_t = 0.0)]
     rate: f64,
 
-    #[arg(long, default_value_t = false)]
-    verbose: bool,
-
     #[arg(long = "output", value_enum, default_value_t = OutputFormat::None)]
     output_format: OutputFormat,
 
@@ -104,7 +94,7 @@ pub struct InjectCmd {
     channel: CovertChannel,
 
     #[arg(long = "confirm", default_value_t = false, help = "Automatically confirm injection.")]
-    is_confirmed: bool,
+    confirmed: bool,
 }
 
 impl InjectCmd {
@@ -135,7 +125,17 @@ impl InjectCmd {
         let source = find_ipv4(&self.interface).ok_or(Error::MissingSourceIp)?;
         self.print_details(source);
 
-        let chunk_size = if self.no_auth { 4 } else { 2 };
+        let mut carrier = create_carrier(
+            self.channel,
+            self.interface.clone(),
+            source,
+            self.dest,
+            self.dest_port,
+            self.source_port,
+            auth.as_ref(),
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        let chunk_size = carrier.get_chunk_size();
         let total_bytes = if self.payload.is_empty() {
             None
         } else {
@@ -161,7 +161,7 @@ impl InjectCmd {
             eprintln!("WARNING: this injection is unpaced and may create high network noise.");
         }
 
-        if !self.is_confirmed && !confirm()? {
+        if !self.confirmed && !confirm()? {
             eprintln!("injection cancelled");
             return Ok(());
         }
@@ -178,20 +178,12 @@ impl InjectCmd {
             None
         };
 
-        let protocol =
-            TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
-        let (mut tx, _rx) = transport_channel(4096, protocol).map_err(|e| match e.kind() {
-            ErrorKind::PermissionDenied => Error::PermissionDenied,
-            _ => Error::Io(e),
-        })?;
-
         let mut src: Box<dyn Read> = if self.payload.is_empty() {
             Box::new(io::stdin().lock())
         } else {
             Box::new(File::open(&self.payload)?)
         };
 
-        let mut index: u32 = 0;
         let mut first = true;
         let mut packets_sent: u64 = 0;
         let packet_period = if self.rate > 0.0 {
@@ -207,12 +199,9 @@ impl InjectCmd {
 
         loop {
             let mut current = vec![0u8; chunk_size];
-            let n = read_command(&mut src, &mut current)?;
+            let n = read_buffer(&mut src, &mut current)?;
             if n == 0 {
                 break;
-            }
-            if !self.no_auth && index == u32::MAX {
-                return Err(Error::SequenceSpaceExhausted);
             }
 
             let is_last = n < chunk_size;
@@ -220,34 +209,8 @@ impl InjectCmd {
                 | if is_last { Flags::End as u8 } else { 0 }
                 | if is_last && n < chunk_size { Flags::Partial as u8 } else { 0 };
 
-            let isn = if self.no_auth {
-                u32::from_be_bytes(current[..].try_into().unwrap())
-            } else {
-                let raw = u16::from_be_bytes(current[..].try_into().unwrap());
+            carrier.send(&current, flags).map_err(|error| io::Error::other(error.to_string()))?;
 
-                let auth_tag =
-                    crate::steg::isn::packet_tag(mac.as_ref().unwrap(), index, flags, raw);
-
-                let cmd = Command::Ping { value: raw };
-                let packet = IsnPacket::new(auth_tag, flags, index as u8, cmd);
-
-                index = index.wrapping_add(1);
-
-                let raw_isn = packet.encode();
-                encrypt_u32(raw_isn, &secret.unwrap())
-            };
-
-            let tcp = construct_tcp_syn(source, self.dest, self.source_port, self.dest_port, isn)?;
-
-            if self.verbose {
-                eprintln!("isn: 0x{isn:08x}");
-                eprintln!(
-                    "tcp: {}",
-                    tcp.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
-                );
-            }
-
-            send_syn(&mut tx, &tcp, self.dest)?;
             packets_sent += 1;
             progress.inc(n as u64);
             progress.set_message(format!("{packets_sent} packets"));
@@ -278,7 +241,7 @@ impl InjectCmd {
     }
 }
 
-fn read_command(src: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
+fn read_buffer(src: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
     let mut filled = 0;
     while filled < buffer.len() {
         match src.read(&mut buffer[filled..]) {

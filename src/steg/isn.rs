@@ -1,3 +1,4 @@
+use std::error::Error as StdError;
 use std::io::ErrorKind;
 use std::io::{self, Write};
 use std::net::Ipv4Addr;
@@ -9,6 +10,7 @@ use pnet::transport::{
     TransportChannelType, TransportProtocol, TransportReceiver, TransportSender, transport_channel,
 };
 use thiserror::Error;
+use tracing::debug;
 
 use super::Carrier;
 use crate::crypto::HmacSha256;
@@ -69,56 +71,8 @@ pub struct IsnCarrier<'a> {
     index: u32,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_mac() -> HmacSha256 {
-        HmacSha256::new_from_slice(b"test key").unwrap()
-    }
-
-    #[test]
-    fn packet_tag_is_deterministic() {
-        let mac = test_mac();
-        assert_eq!(packet_tag(&mac, 7, 0x01, 0x1234), packet_tag(&mac, 7, 0x01, 0x1234));
-    }
-
-    #[test]
-    fn packet_tag_covers_sequence_flags_and_payload() {
-        let mac = test_mac();
-        let original = packet_tag(&mac, 7, 0x01, 0x1234);
-
-        assert_ne!(original, packet_tag(&mac, 8, 0x01, 0x1234));
-        assert_ne!(original, packet_tag(&mac, 7, 0x02, 0x1234));
-        assert_ne!(original, packet_tag(&mac, 7, 0x01, 0x1235));
-    }
-}
-
 impl<'a> Carrier<'a> for IsnCarrier<'a> {
-    type Error = Error;
-
-    fn new(
-        interface: NetworkInterface,
-        source: Ipv4Addr,
-        dest: Ipv4Addr,
-        dest_port: u16,
-        source_port: u16,
-        auth: Option<&'a Auth>,
-    ) -> Result<Self, Error> {
-        let protocol =
-            TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
-        let (tx, rx) = transport_channel(4096, protocol).map_err(|error| {
-            if error.kind() == ErrorKind::PermissionDenied {
-                Error::PermissionDenied
-            } else {
-                Error::Io(error)
-            }
-        })?;
-
-        Ok(Self { interface, source, dest, dest_port, source_port, tx, rx, auth, index: 0 })
-    }
-
-    fn send(&mut self, data: &[u8], flags: u8) -> Result<(), Error> {
+    fn send(&mut self, data: &[u8], flags: u8) -> Result<(), Box<dyn StdError>> {
         let isn = match self.auth {
             None => {
                 let bytes: [u8; 4] = data.try_into().map_err(|_| Error::InvalidChunkSize)?;
@@ -126,7 +80,7 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
             }
             Some(auth) => {
                 if self.index == u32::MAX {
-                    return Err(Error::SequenceSpaceExhausted);
+                    return Err(Error::SequenceSpaceExhausted.into());
                 }
                 let bytes: [u8; 2] = data.try_into().map_err(|_| Error::InvalidChunkSize)?;
                 let raw = u16::from_be_bytes(bytes);
@@ -142,10 +96,12 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
         if self.auth.is_some() {
             self.index += 1;
         }
+
+        debug!("isn: 0x{isn:08x}");
         Ok(())
     }
 
-    fn extract(&mut self, capture: &mut CaptureSource) -> Result<(), Error> {
+    fn extract(&mut self, capture: &mut CaptureSource) -> Result<(), Box<dyn StdError>> {
         let auth = self.auth.ok_or(Error::MissingAuth)?;
         let filter = format!("tcp dst port {}", self.dest_port);
         capture.filter(&filter, true)?;
@@ -158,7 +114,7 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
                 if capture.is_live() {
                     continue;
                 }
-                return Err(Error::MissingEndMarker);
+                return Err(Error::MissingEndMarker.into());
             };
             let Some(isn) = extract_isn(&packet) else {
                 continue;
@@ -192,5 +148,57 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
                 return Ok(());
             }
         }
+    }
+
+    fn get_chunk_size(&self) -> usize {
+        if self.auth.is_some() { 2 } else { 4 }
+    }
+}
+
+impl<'a> IsnCarrier<'a> {
+    pub fn new(
+        interface: NetworkInterface,
+        source: Ipv4Addr,
+        dest: Ipv4Addr,
+        dest_port: u16,
+        source_port: u16,
+        auth: Option<&'a Auth>,
+    ) -> Result<Self, Error> {
+        let protocol =
+            TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
+        let (tx, rx) = transport_channel(4096, protocol).map_err(|error| {
+            if error.kind() == ErrorKind::PermissionDenied {
+                Error::PermissionDenied
+            } else {
+                Error::Io(error)
+            }
+        })?;
+
+        Ok(Self { interface, source, dest, dest_port, source_port, tx, rx, auth, index: 0 })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_mac() -> HmacSha256 {
+        HmacSha256::new_from_slice(b"test key").unwrap()
+    }
+
+    #[test]
+    fn packet_tag_is_deterministic() {
+        let mac = test_mac();
+        assert_eq!(packet_tag(&mac, 7, 0x01, 0x1234), packet_tag(&mac, 7, 0x01, 0x1234));
+    }
+
+    #[test]
+    fn packet_tag_covers_sequence_flags_and_payload() {
+        let mac = test_mac();
+        let original = packet_tag(&mac, 7, 0x01, 0x1234);
+
+        assert_ne!(original, packet_tag(&mac, 8, 0x01, 0x1234));
+        assert_ne!(original, packet_tag(&mac, 7, 0x02, 0x1234));
+        assert_ne!(original, packet_tag(&mac, 7, 0x01, 0x1235));
     }
 }
