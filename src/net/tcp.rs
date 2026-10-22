@@ -24,7 +24,7 @@ pub fn construct_tcp_syn(
     dest_port: u16,
     isn: u32,
 ) -> Result<Vec<u8>, Error> {
-    let mut tcp_buffer = vec![0u8; 20];
+    let mut tcp_buffer = vec![0u8; 20]; // Minimum size of TCP header
     let mut tcp_packet = MutableTcpPacket::new(&mut tcp_buffer).ok_or(Error::PacketCreation)?;
 
     tcp_packet.set_source(source_port);
@@ -54,8 +54,6 @@ pub fn send_syn(
     Ok(())
 }
 
-/// Returns the sequence number from a captured Ethernet/IPv4 TCP SYN packet.
-/// Non-IPv4, non-TCP, non-SYN, and malformed frames are ignored.
 pub fn extract_isn(data: &[u8]) -> Option<u32> {
     let ethernet = EthernetPacket::new(data)?;
     if ethernet.get_ethertype() != EtherTypes::Ipv4 {

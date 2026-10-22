@@ -4,8 +4,11 @@ use std::net::Ipv4Addr;
 
 use crate::crypto::auth::Auth;
 use crate::net::capture::CaptureSource;
+use crate::steg::identifier::IdentifierCarrier;
 use crate::steg::isn::IsnCarrier;
 
+pub mod identifier;
+pub mod identifier_frame;
 pub mod isn;
 pub mod isn_frame;
 
@@ -13,6 +16,8 @@ pub mod isn_frame;
 pub enum CovertChannel {
     #[value(name = "syn-isn")]
     SynIsn,
+    #[value(name = "icmp")]
+    Icmp,
 }
 
 pub trait Carrier<'a> {
@@ -34,5 +39,6 @@ pub fn create_carrier<'a>(
         CovertChannel::SynIsn => {
             Ok(Box::new(IsnCarrier::new(source, dest, dest_port, source_port, auth)?))
         }
+        CovertChannel::Icmp => Ok(Box::new(IdentifierCarrier::new(dest, auth)?)),
     }
 }

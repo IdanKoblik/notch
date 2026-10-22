@@ -27,6 +27,9 @@ pub enum Error {
     #[error("packet rate must be a finite, nonnegative value")]
     InvalidPacketRate,
 
+    #[error("--port and --source-port are only available with --channel syn-isn")]
+    IcmpPortsUnsupported,
+
     #[error("Auth error {0}")]
     Auth(#[from] crate::crypto::auth::Error),
 
@@ -55,39 +58,46 @@ pub enum OutputFormat {
     override_usage = "notch inject [OPTIONS] --dest <DEST> --interface <INTERFACE>"
 )]
 pub struct InjectCmd {
-    #[arg(long)]
+    #[arg(long = "dest", help = "Destination IPv4 address.")]
     dest: Ipv4Addr,
 
-    #[arg(long = "port", default_value_t = 6769)]
-    dest_port: u16,
+    #[arg(long = "port", help = "Destination TCP port (syn-isn channel only).")]
+    dest_port: Option<u16>,
 
-    #[arg(long = "source-port", default_value_t = 6769)]
-    source_port: u16,
+    #[arg(long = "source-port", help = "Source TCP port (syn-isn channel only).")]
+    source_port: Option<u16>,
 
-    #[arg(short, long, value_parser = parse_interface)]
+    #[arg(short, long = "interface", value_parser = parse_interface, help = "Network interface to send through.")]
     interface: NetworkInterface,
 
-    #[arg(long = "no-auth", default_value_t = false)]
+    #[arg(long = "no-auth", default_value_t = false, help = "Disable authentication.")]
     no_auth: bool,
 
     #[arg(
-        long,
+        long = "payload",
         default_value = "",
         help = "Payload to inject. Alternatively, pipe the payload through stdin."
     )]
     payload: String,
 
-    /// Maximum packets per second, 0 sends without pacing.
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(
+        long = "rate",
+        default_value_t = 0.0,
+        help = "Maximum packets per second; 0 sends without pacing."
+    )]
     rate: f64,
 
-    #[arg(long = "output", value_enum, default_value_t = OutputFormat::None)]
+    #[arg(long = "output", value_enum, default_value_t = OutputFormat::None, help = "Write injected packets to a capture file.")]
     output_format: OutputFormat,
 
-    #[arg(long, value_enum, default_value_t = CovertChannel::SynIsn)]
+    #[arg(long = "channel", value_enum, default_value_t = CovertChannel::SynIsn, help = "Covert channel to use.")]
     channel: CovertChannel,
 
-    #[arg(long = "confirm", default_value_t = false, help = "Automatically confirm injection.")]
+    #[arg(
+        long = "confirm",
+        default_value_t = false,
+        help = "Skip the injection confirmation prompt."
+    )]
     confirmed: bool,
 }
 
@@ -95,8 +105,11 @@ impl InjectCmd {
     fn print_details(&self, source: Ipv4Addr) {
         eprintln!(" Injection details:");
         eprintln!("   source={source} interface={}", self.interface.name);
-        eprintln!("   destination={} destination_port={}", self.dest, self.dest_port);
-        eprintln!("   source_port={}", self.source_port);
+        eprintln!("   destination={}", self.dest);
+        if self.channel == CovertChannel::SynIsn {
+            eprintln!("   destination_port={}", self.dest_port.unwrap_or(6769));
+            eprintln!("   source_port={}", self.source_port.unwrap_or(6769));
+        }
         eprintln!("   authentication={}", if self.no_auth { "disabled" } else { "enabled" });
         eprintln!(
             "   payload={}",
@@ -105,6 +118,12 @@ impl InjectCmd {
     }
 
     pub fn run(&self) -> Result<(), Error> {
+        if self.channel == CovertChannel::Icmp
+            && (self.dest_port.is_some() || self.source_port.is_some())
+        {
+            return Err(Error::IcmpPortsUnsupported);
+        }
+
         if !self.rate.is_finite() || self.rate < 0.0 {
             return Err(Error::InvalidPacketRate);
         }
@@ -123,8 +142,8 @@ impl InjectCmd {
             self.channel,
             Some(source),
             Some(self.dest),
-            self.dest_port,
-            self.source_port,
+            self.dest_port.unwrap_or(6769),
+            self.source_port.unwrap_or(6769),
             auth.as_ref(),
         )
         .map_err(|error| io::Error::other(error.to_string()))?;
@@ -162,10 +181,17 @@ impl InjectCmd {
         let mut pcap_output = if self.output_format == Pcap {
             let path = "inject.pcap";
             info!("writing injected packets to {path}");
-            let filter = format!(
-                "tcp and src host {source} and dst host {} and src port {} and dst port {}",
-                self.dest, self.source_port, self.dest_port
-            );
+            let filter = match self.channel {
+                CovertChannel::SynIsn => format!(
+                    "tcp and src host {source} and dst host {} and src port {} and dst port {}",
+                    self.dest,
+                    self.source_port.unwrap_or(6769),
+                    self.dest_port.unwrap_or(6769)
+                ),
+                CovertChannel::Icmp => {
+                    format!("icmp and src host {source} and dst host {}", self.dest)
+                }
+            };
             Some(PcapCapture::start(&self.interface.name, &filter, path)?)
         } else {
             None

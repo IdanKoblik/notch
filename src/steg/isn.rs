@@ -18,7 +18,7 @@ use crate::crypto::auth::Auth;
 use crate::crypto::num::{decrypt_u32, encrypt_u32};
 use crate::net::capture::CaptureSource;
 use crate::net::tcp::{self, construct_tcp_syn, extract_isn, send_syn};
-use crate::steg::isn_frame::{Command, Flags, IsnFrame};
+use crate::steg::isn_frame::{Flags, IsnFrame};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -55,14 +55,6 @@ pub enum Error {
     Io(#[from] io::Error),
 }
 
-pub fn packet_tag(mac: &HmacSha256, index: u32, flags: u8, value: u16) -> u8 {
-    let mut tagger = mac.clone();
-    tagger.update(&index.to_be_bytes());
-    tagger.update(&[flags]);
-    tagger.update(&value.to_be_bytes());
-    tagger.finalize().into_bytes()[0]
-}
-
 pub struct IsnCarrier<'a> {
     pub source: Option<Ipv4Addr>,
     pub dest: Option<Ipv4Addr>,
@@ -70,9 +62,16 @@ pub struct IsnCarrier<'a> {
     pub source_port: u16,
 
     pub tx: TransportSender,
-    // pub rx: TransportReceiver,
     pub auth: Option<&'a Auth>,
     index: u32,
+}
+
+fn packet_tag(mac: &HmacSha256, index: u32, flags: u8, value: u16) -> u8 {
+    let mut tagger = mac.clone();
+    tagger.update(&index.to_be_bytes());
+    tagger.update(&[flags]);
+    tagger.update(&value.to_be_bytes());
+    tagger.finalize().into_bytes()[0]
 }
 
 impl<'a> Carrier<'a> for IsnCarrier<'a> {
@@ -92,16 +91,15 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
                 let bytes: [u8; 2] = data.try_into().map_err(|_| Error::InvalidChunkSize)?;
                 let raw = u16::from_be_bytes(bytes);
                 let auth_tag = packet_tag(&auth.mac, self.index, flags, raw);
-                let packet =
-                    IsnFrame::new(auth_tag, flags, self.index as u8, Command::Ping { value: raw });
-                encrypt_u32(packet.encode(), &auth.secret)
+                let frame = IsnFrame::new(auth_tag, flags, self.index as u8, raw);
+                encrypt_u32(frame.encode(), &auth.secret)
             }
         };
 
         let tcp = construct_tcp_syn(source, dest, self.source_port, self.dest_port, isn)?;
         send_syn(&mut self.tx, &tcp, dest)?;
         if self.auth.is_some() {
-            self.index += 1;
+            self.index = self.index.wrapping_add(1);
         }
 
         debug!("isn: 0x{isn:08x}");
@@ -138,7 +136,8 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
                 continue;
             }
 
-            if packet_tag(&auth.mac, expected_index, decoded.flags, decoded.cmd) != decoded.auth_tag
+            if packet_tag(&auth.mac, expected_index, decoded.flags, decoded.value)
+                != decoded.auth_tag
             {
                 warn!("ignoring SYN with invalid authentication tag at packet {expected_index}");
                 continue;
@@ -150,9 +149,7 @@ impl<'a> Carrier<'a> for IsnCarrier<'a> {
                 }
                 started = true;
             }
-            let Command::Ping { value } =
-                Command::decode(decoded.cmd).ok_or(Error::MissingEndMarker)?;
-            let bytes = value.to_be_bytes();
+            let bytes = decoded.value.to_be_bytes();
             if decoded.flags & Flags::Partial as u8 != 0 {
                 stdout.write_all(&bytes[..1])?;
             } else {

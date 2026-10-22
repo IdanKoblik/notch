@@ -26,21 +26,24 @@ pub enum Error {
 }
 
 #[derive(Args)]
-#[command(about = "Extract an authenticated payload from TCP SYN packets.")]
+#[command(
+    about = "Extract a payload from network packets.",
+    override_usage = "notch extract [OPTIONS] (--pcap <FILE> | --interface <INTERFACE>)"
+)]
 pub struct ExtractCmd {
-    #[arg(short, long, value_parser = parse_interface, required_unless_present = "pcap")]
+    #[arg(short, long = "interface", value_parser = parse_interface, required_unless_present = "pcap", help = "Network interface to capture from.")]
     interface: Option<NetworkInterface>,
 
-    #[arg(long, value_name = "FILE")]
+    #[arg(long = "pcap", value_name = "FILE", help = "Read packets from a capture file.")]
     pcap: Option<PathBuf>,
 
-    #[arg(long = "source-port", default_value_t = 6769)]
+    #[arg(long = "source-port", default_value_t = 6769, help = "Filter by TCP source port.")]
     source_port: u16,
 
-    #[arg(long = "port", default_value_t = 6769)]
+    #[arg(long = "port", default_value_t = 6769, help = "Filter by TCP destination port.")]
     dest_port: u16,
 
-    #[arg(long, value_enum, default_value_t = CovertChannel::SynIsn)]
+    #[arg(long = "channel", value_enum, default_value_t = CovertChannel::SynIsn, help = "Covert channel to decode.")]
     channel: CovertChannel,
 }
 
