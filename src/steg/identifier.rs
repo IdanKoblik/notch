@@ -1,7 +1,9 @@
 use hmac::Mac;
 use pnet::packet::icmp::{IcmpCode, IcmpTypes};
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::transport::{TransportChannelType, TransportSender, transport_channel};
+use pnet::transport::{
+    TransportChannelType, TransportProtocol, TransportSender, transport_channel,
+};
 use std::error::Error as StdError;
 use std::io::{self, ErrorKind, Write};
 use std::net::Ipv4Addr;
@@ -163,7 +165,8 @@ impl<'a> IdentifierCarrier<'a> {
     }
 
     pub fn new(dest: Option<Ipv4Addr>, auth: Option<&'a Auth>) -> Result<Self, Error> {
-        let protocol = TransportChannelType::Layer3(IpNextHeaderProtocols::Icmp);
+        let protocol =
+            TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Icmp));
         let (tx, _) = transport_channel(4096, protocol).map_err(|error| {
             if error.kind() == ErrorKind::PermissionDenied {
                 Error::PermissionDenied
