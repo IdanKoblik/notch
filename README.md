@@ -14,10 +14,10 @@ Prebuilt binaries, when available, are published on
 
 ## Injection methods
 
-| Method                | Status    | Details                                                                       |
-| --------------------- | --------- | ----------------------------------------------------------------------------- |
-| TCP SYN ISN injection | Available | Encodes payload data in the Initial Sequence Number (ISN) of TCP SYN packets. |
-| ICMP                  | Planned   | Planned transport method.                                                      |
+| Method                | Status    |
+| --------------------- | --------- |
+| TCP SYN ISN injection | Available |
+| ICMP                  | Available |
 
 Authenticated mode uses a `SECRET` (via HMAC) so that encoded data can be
 verified by the receiver and is not trivially recoverable by an observer.
