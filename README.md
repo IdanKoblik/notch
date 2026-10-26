@@ -14,10 +14,10 @@ Prebuilt binaries, when available, are published on
 
 ## Injection methods
 
-| Method                | Status    | Details                                                                       |
-| --------------------- | --------- | ----------------------------------------------------------------------------- |
-| TCP SYN ISN injection | Available | Encodes payload data in the Initial Sequence Number (ISN) of TCP SYN packets. |
-| ICMP                  | Planned   | Planned transport method.                                                      |
+| Method                | Status    |
+| --------------------- | --------- |
+| TCP SYN ISN injection | Available |
+| ICMP                  | Available |
 
 Authenticated mode uses a `SECRET` (via HMAC) so that encoded data can be
 verified by the receiver and is not trivially recoverable by an observer.
@@ -102,18 +102,25 @@ sudo ./qemu/bridge-down.sh sender   # tear down when done
 
 ### Covert-channel analysis
 
-`lab/orchestrator.py` runs a full experiment end to end: it captures SYNs on the
-host, drives the VM to run `notch inject`, and then analyzes the captured
-traffic. The `lab/isn/` package performs the steganalysis, testing whether the
-TCP ISNs look random (a real OS) or carry a hidden payload, and writing a
-verdict plus a scorecard image to `lab/results/`.
+`lab/orchestrator.py` runs an experiment end to end: it captures packets on the
+host, drives the VM to run `notch inject`, and analyzes the capture. The
+`syn-isn` channel checks TCP initial sequence numbers; `icmp` checks ICMP echo
+identifiers. Both write a JSON report and scorecard image to `lab/results/`.
 
 ```sh
 cd lab
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python orchestrator.py --mode no-auth     # capture, inject, and analyze
+.venv/bin/python orchestrator.py --channel icmp --mode no-auth
 .venv/bin/python -m isn.analyze captures/some.pcap  # analyze an existing capture
+.venv/bin/python -m icmp.analyze captures/some.pcap # analyze an ICMP capture
 ```
+
+The ICMP channel does not use TCP ports. The lab captures ICMP only for that
+run; its analyzer excludes the channel's end marker from the identifier
+statistics. These are simple statistical demonstrations: authenticated
+identifiers are encrypted and can look random even while carrying data, so use
+`--mode no-auth` to see the payload-shaped signal.
 
 ![lab](assets/isn.png)
 

@@ -15,8 +15,5 @@ pub fn confirm() -> Result<bool, super::Error> {
     tty.get_mut().flush()?;
     let mut answer = String::new();
     tty.read_line(&mut answer)?;
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }

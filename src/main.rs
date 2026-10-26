@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 use libc::{self, RLIMIT_CORE, rlimit};
+use tracing::{error, warn};
+use tracing_subscriber::{EnvFilter, fmt};
 
 mod cli;
 mod cmd;
@@ -14,7 +16,10 @@ struct Cli {
     command: Commands,
 
     #[arg(long = "dev", default_value_t = false)]
-    is_dev: bool,
+    dev: bool,
+
+    #[arg(long = "verbose", default_value_t = false)]
+    verbose: bool,
 }
 
 #[derive(Subcommand)]
@@ -25,22 +30,30 @@ enum Commands {
 
 fn harden_process() {
     unsafe {
-        let no_core = rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
+        let no_core = rlimit { rlim_cur: 0, rlim_max: 0 };
 
         if libc::setrlimit(RLIMIT_CORE, &no_core) != 0 {
-            eprintln!("Could not disable core dumps");
+            error!("Could not disable core dumps");
         }
 
         #[cfg(target_os = "linux")]
         {
             if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
-                eprintln!("Could not clear the dumpable flag");
+                error!("Could not clear the dumpable flag");
             }
         }
     }
+}
+
+fn init_logging(verbose: bool) {
+    let level = if verbose { "debug" } else { "info" };
+
+    fmt()
+        .without_time()
+        .with_target(false)
+        .with_writer(crate::cli::progress::ProgressLogWriter::new)
+        .with_env_filter(EnvFilter::new(level))
+        .init();
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,8 +65,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    if cli.is_dev {
-        println!("WARNING: YOU ARE RUNNING IN DEV MODE!!!");
+    init_logging(cli.verbose);
+
+    if cli.dev {
+        warn!("YOU ARE RUNNING IN DEV MODE!!!");
     } else {
         harden_process();
     }

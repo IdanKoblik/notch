@@ -1,125 +1,216 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Command {
-    Ping { value: u16 },
+use std::error::Error as StdError;
+use std::io::ErrorKind;
+use std::io::{self, Write};
+use std::net::Ipv4Addr;
+
+use hmac::Mac;
+use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::transport::{
+    TransportChannelType, TransportProtocol, TransportSender, transport_channel,
+};
+use thiserror::Error;
+use tracing::{debug, info, warn};
+
+use super::Carrier;
+use crate::crypto::HmacSha256;
+use crate::crypto::auth::Auth;
+use crate::crypto::num::{decrypt_u32, encrypt_u32};
+use crate::net::capture::CaptureSource;
+use crate::net::tcp::{self, construct_tcp_syn, extract_isn, send_syn};
+use crate::steg::isn_frame::{Flags, IsnFrame};
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("missing auth secret")]
+    MissingAuth,
+
+    #[error(
+        "capture ended before a complete payload was found; output may be incomplete or corrupted"
+    )]
+    MissingEndMarker,
+
+    #[error("authenticated ISN sequence space is exhausted")]
+    SequenceSpaceExhausted,
+
+    #[error("payload chunk must be 2 bytes with authentication or 4 bytes without authentication")]
+    InvalidChunkSize,
+
+    #[error("raw transport sockets require CAP_NET_RAW")]
+    PermissionDenied,
+
+    #[error("source address is not set")]
+    MissingSource,
+
+    #[error("destination address is not set")]
+    MissingDest,
+
+    #[error("failed to construct TCP packet: {0}")]
+    Tcp(#[from] tcp::Error),
+
+    #[error("capture error: {0}")]
+    Capture(#[from] pcap::Error),
+
+    #[error("output error: {0}")]
+    Io(#[from] io::Error),
 }
 
-impl Command {
-    pub fn encode(&self) -> u16 {
-        match self {
-            Command::Ping { value } => *value,
+pub struct IsnCarrier<'a> {
+    pub source: Option<Ipv4Addr>,
+    pub dest: Option<Ipv4Addr>,
+    pub dest_port: u16,
+    pub source_port: u16,
+
+    pub tx: TransportSender,
+    pub auth: Option<&'a Auth>,
+    index: u32,
+}
+
+fn packet_tag(mac: &HmacSha256, index: u32, flags: u8, value: u16) -> u8 {
+    let mut tagger = mac.clone();
+    tagger.update(&index.to_be_bytes());
+    tagger.update(&[flags]);
+    tagger.update(&value.to_be_bytes());
+    tagger.finalize().into_bytes()[0]
+}
+
+impl<'a> Carrier<'a> for IsnCarrier<'a> {
+    fn send(&mut self, data: &[u8], flags: u8) -> Result<(), Box<dyn StdError>> {
+        let source = self.source.ok_or(Error::MissingSource)?;
+        let dest = self.dest.ok_or(Error::MissingDest)?;
+
+        let isn = match self.auth {
+            None => {
+                let bytes: [u8; 4] = data.try_into().map_err(|_| Error::InvalidChunkSize)?;
+                u32::from_be_bytes(bytes)
+            }
+            Some(auth) => {
+                if self.index == u32::MAX {
+                    return Err(Error::SequenceSpaceExhausted.into());
+                }
+                let bytes: [u8; 2] = data.try_into().map_err(|_| Error::InvalidChunkSize)?;
+                let raw = u16::from_be_bytes(bytes);
+                let auth_tag = packet_tag(&auth.mac, self.index, flags, raw);
+                let frame = IsnFrame::new(auth_tag, flags, self.index as u8, raw);
+                encrypt_u32(frame.encode(), &auth.secret)
+            }
+        };
+
+        let tcp = construct_tcp_syn(source, dest, self.source_port, self.dest_port, isn)?;
+        send_syn(&mut self.tx, &tcp, dest)?;
+        if self.auth.is_some() {
+            self.index = self.index.wrapping_add(1);
+        }
+
+        debug!("isn: 0x{isn:08x}");
+        Ok(())
+    }
+
+    fn extract(&mut self, capture: &mut CaptureSource) -> Result<(), Box<dyn StdError>> {
+        let auth = self.auth.ok_or(Error::MissingAuth)?;
+        let filter =
+            format!("tcp dst port {} and tcp src port {}", self.dest_port, self.source_port);
+        info!("using capture filter: {filter}");
+        capture.filter(&filter, true)?;
+
+        let mut expected_index = 0u32;
+        let mut started = false;
+        let mut stdout = io::stdout().lock();
+        loop {
+            let Some(packet) = capture.next_packet()? else {
+                if capture.is_live() {
+                    continue;
+                }
+                return Err(Error::MissingEndMarker.into());
+            };
+            let Some(isn) = extract_isn(&packet) else {
+                continue;
+            };
+            let decoded = IsnFrame::decode(decrypt_u32(isn, &auth.secret));
+            if u32::from(decoded.index) != (expected_index & 0x0f) {
+                warn!(
+                    "ignoring SYN with unexpected packet index {} (expected {})",
+                    decoded.index,
+                    expected_index & 0x0f
+                );
+                continue;
+            }
+
+            if packet_tag(&auth.mac, expected_index, decoded.flags, decoded.value)
+                != decoded.auth_tag
+            {
+                warn!("ignoring SYN with invalid authentication tag at packet {expected_index}");
+                continue;
+            }
+
+            if !started {
+                if decoded.flags & Flags::Start as u8 == 0 {
+                    continue;
+                }
+                started = true;
+            }
+            let bytes = decoded.value.to_be_bytes();
+            if decoded.flags & Flags::Partial as u8 != 0 {
+                stdout.write_all(&bytes[..1])?;
+            } else {
+                stdout.write_all(&bytes)?;
+            }
+            expected_index = expected_index.wrapping_add(1);
+            if decoded.flags & Flags::End as u8 != 0 {
+                stdout.flush()?;
+                return Ok(());
+            }
         }
     }
 
-    #[allow(unused)]
-    pub fn decode(cmd: u16) -> Option<Self> {
-        Some(Command::Ping { value: cmd })
+    fn get_chunk_size(&self) -> usize {
+        if self.auth.is_some() { 2 } else { 4 }
     }
 }
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy)]
-pub enum Flags {
-    None = 0x0,
-    Start = 0x1,
-    End = 0x2,
-    Partial = 0x4,
-}
+impl<'a> IsnCarrier<'a> {
+    pub fn new(
+        source: Option<Ipv4Addr>,
+        dest: Option<Ipv4Addr>,
+        dest_port: u16,
+        source_port: u16,
+        auth: Option<&'a Auth>,
+    ) -> Result<Self, Error> {
+        let protocol =
+            TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
+        let (tx, _) = transport_channel(4096, protocol).map_err(|error| {
+            if error.kind() == ErrorKind::PermissionDenied {
+                Error::PermissionDenied
+            } else {
+                Error::Io(error)
+            }
+        })?;
 
-pub struct IsnPacket {
-    pub auth_tag: u8,
-    pub flags: u8,
-    pub index: u8,
-    pub cmd: u16,
-}
-
-impl IsnPacket {
-    pub fn new(auth_tag: u8, flags: u8, index: u8, cmd: Command) -> Self {
-        Self {
-            auth_tag,
-            flags: flags & 0x0F,
-            index: index & 0x0F,
-            cmd: cmd.encode(),
-        }
-    }
-
-    pub fn encode(&self) -> u32 {
-        (self.auth_tag as u32) << 24
-            | (self.flags as u32) << 20
-            | (self.index as u32) << 16
-            | (self.cmd as u32)
-    }
-
-    pub fn decode(value: u32) -> Self {
-        Self {
-            auth_tag: (value >> 24) as u8,
-            flags: ((value >> 20) & 0x0f) as u8,
-            index: ((value >> 16) & 0x0f) as u8,
-            cmd: value as u16,
-        }
+        Ok(Self { source, dest, dest_port, source_port, tx, auth, index: 0 })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hmac::KeyInit;
 
-    fn ping(value: u16) -> Command {
-        Command::Ping { value }
+    fn test_mac() -> HmacSha256 {
+        HmacSha256::new_from_slice(b"test key").unwrap()
     }
 
     #[test]
-    fn command_encode_edge_cases() {
-        assert_eq!(ping(0).encode(), 0); // min
-        assert_eq!(ping(0xABCD).encode(), 0xABCD); // typical
-        assert_eq!(ping(0xFFFF).encode(), 0xFFFF); // max
+    fn packet_tag_is_deterministic() {
+        let mac = test_mac();
+        assert_eq!(packet_tag(&mac, 7, 0x01, 0x1234), packet_tag(&mac, 7, 0x01, 0x1234));
     }
 
     #[test]
-    fn command_decode_edge_cases() {
-        assert_eq!(Command::decode(0), Some(ping(0)));
-        assert_eq!(Command::decode(0xABCD), Some(ping(0xABCD)));
-        assert_eq!(Command::decode(0xFFFF), Some(ping(0xFFFF)));
-    }
+    fn packet_tag_covers_sequence_flags_and_payload() {
+        let mac = test_mac();
+        let original = packet_tag(&mac, 7, 0x01, 0x1234);
 
-    #[test]
-    fn command_decode_preserves_all_payload_bits() {
-        assert_eq!(Command::decode(0x0000), Some(ping(0)));
-        assert_eq!(Command::decode(0xABCD), Some(ping(0xABCD)));
-    }
-
-    #[test]
-    fn command_roundtrip() {
-        for value in 0..=u16::MAX {
-            let cmd = ping(value);
-            assert_eq!(Command::decode(cmd.encode()), Some(cmd));
-        }
-    }
-
-    #[test]
-    fn packet_encode_edge_cases() {
-        let cmd = ping(0xABC);
-        assert_eq!(
-            IsnPacket::new(0xAA, Flags::Start as u8, 0x3, cmd).encode(),
-            0xAA13_0ABC
-        );
-        assert_eq!(
-            IsnPacket::new(0, Flags::None as u8, 0, ping(0)).encode(),
-            0x0000_0000
-        );
-        assert_eq!(
-            IsnPacket::new(0xFF, 0xF, 0xF, ping(0xFFF)).encode(),
-            0xFFFF_0FFF
-        );
-        assert_eq!(IsnPacket::new(0, 0xFF, 0xFF, ping(0)).encode(), 0x00FF_0000);
-    }
-
-    #[test]
-    fn packet_decode_roundtrip() {
-        let packet = IsnPacket::new(0xA5, 0x7, 0xD, ping(0xBEEF));
-        let decoded = IsnPacket::decode(packet.encode());
-        assert_eq!(decoded.auth_tag, 0xA5);
-        assert_eq!(decoded.flags, 0x7);
-        assert_eq!(decoded.index, 0xD);
-        assert_eq!(decoded.cmd, 0xBEEF);
+        assert_ne!(original, packet_tag(&mac, 8, 0x01, 0x1234));
+        assert_ne!(original, packet_tag(&mac, 7, 0x02, 0x1234));
+        assert_ne!(original, packet_tag(&mac, 7, 0x01, 0x1235));
     }
 }
