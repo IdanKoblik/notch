@@ -3,11 +3,10 @@ use std::io::ErrorKind;
 use std::io::{self, Write};
 use std::net::Ipv4Addr;
 
-use hmac::{KeyInit, Mac};
-use pnet::datalink::NetworkInterface;
+use hmac::Mac;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::transport::{
-    TransportChannelType, TransportProtocol, TransportReceiver, TransportSender, transport_channel,
+    TransportChannelType, TransportProtocol, TransportSender, transport_channel,
 };
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -193,6 +192,7 @@ impl<'a> IsnCarrier<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hmac::KeyInit;
 
     fn test_mac() -> HmacSha256 {
         HmacSha256::new_from_slice(b"test key").unwrap()

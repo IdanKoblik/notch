@@ -23,6 +23,23 @@ pub enum IdentifierFrame {
     Cmd(Command),
 }
 
+impl IdentifierFrame {
+    pub fn encode(&self) -> u16 {
+        match self {
+            IdentifierFrame::Raw { auth_tag, value } => ((*auth_tag as u16) << 8) | (*value as u16),
+            IdentifierFrame::Cmd(cmd) => cmd.encode(),
+        }
+    }
+
+    pub fn decode(raw: u16) -> Self {
+        if let Some(cmd) = Command::decode(raw) {
+            return IdentifierFrame::Cmd(cmd);
+        }
+
+        IdentifierFrame::Raw { auth_tag: (raw >> 8) as u8, value: (raw & 0x00FF) as u8 }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,22 +60,5 @@ mod tests {
     #[test]
     fn command_encoding_takes_precedence_over_raw_frame() {
         assert!(matches!(IdentifierFrame::decode(0x0001), IdentifierFrame::Cmd(Command::Eot)));
-    }
-}
-
-impl IdentifierFrame {
-    pub fn encode(&self) -> u16 {
-        match self {
-            IdentifierFrame::Raw { auth_tag, value } => ((*auth_tag as u16) << 8) | (*value as u16),
-            IdentifierFrame::Cmd(cmd) => cmd.encode(),
-        }
-    }
-
-    pub fn decode(raw: u16) -> Self {
-        if let Some(cmd) = Command::decode(raw) {
-            return IdentifierFrame::Cmd(cmd);
-        }
-
-        IdentifierFrame::Raw { auth_tag: (raw >> 8) as u8, value: (raw & 0x00FF) as u8 }
     }
 }

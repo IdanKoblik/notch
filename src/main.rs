@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use libc::{self, RLIMIT_CORE, rlimit};
-use tracing::{debug, error, info, warn};
+use tracing::{error, warn};
 use tracing_subscriber::{EnvFilter, fmt};
 
 mod cli;

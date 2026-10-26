@@ -1,6 +1,6 @@
 use std::env;
 
-use hmac::{KeyInit, Mac};
+use hmac::KeyInit;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 

@@ -8,7 +8,6 @@ use crate::net::tcp;
 use crate::steg::isn_frame::Flags;
 use crate::steg::{CovertChannel, create_carrier};
 use clap::{Args, ValueEnum};
-use hmac::KeyInit;
 use pnet::datalink::NetworkInterface;
 use std::fs::File;
 use std::io;

@@ -2,7 +2,6 @@ use std::net::Ipv4Addr;
 
 use pnet::datalink::{self};
 use pnet::ipnetwork;
-use tracing::debug;
 
 pub fn parse_interface(s: &str) -> Result<datalink::NetworkInterface, String> {
     pnet::datalink::interfaces()
@@ -23,6 +22,7 @@ mod tests {
     use super::*;
     use pnet::ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
     use std::net::Ipv6Addr;
+    use tracing::debug;
 
     fn make_interface(name: &str, ips: Vec<IpNetwork>) -> datalink::NetworkInterface {
         datalink::NetworkInterface {

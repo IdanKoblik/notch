@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn decode_extracts_each_field() {
-        let decoded = IsnFrame::decode(0xA5_6B_CDEF);
+        let decoded = IsnFrame::decode(0xA56B_CDEF);
         assert_eq!(
             (decoded.auth_tag, decoded.flags, decoded.index, decoded.value),
             (0xA5, 0x06, 0x0B, 0xCDEF)

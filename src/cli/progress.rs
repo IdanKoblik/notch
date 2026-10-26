@@ -31,7 +31,7 @@ impl Write for ProgressLogWriter {
 impl Drop for ProgressLogWriter {
     fn drop(&mut self) {
         let line = String::from_utf8_lossy(&self.0);
-        let line = line.trim_end_matches(|c| c == '\r' || c == '\n');
+        let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             return;
         }

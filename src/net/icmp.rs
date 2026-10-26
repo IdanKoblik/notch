@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(packet.get_icmp_code(), IcmpCode(0));
         assert_eq!(packet.get_identifier(), 0x1234);
         assert_eq!(packet.get_sequence_number(), 0x5678);
-        assert_eq!(checksum(&IcmpPacket::new(&bytes).unwrap()), 0);
+        assert_eq!(packet.get_checksum(), checksum(&IcmpPacket::new(&bytes).unwrap()));
     }
 
     #[test]
